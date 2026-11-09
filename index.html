@@ -1,0 +1,635 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Punter's Toolkit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@500;700&display=swap">
+<style>
+/* Layout: a tote-board strip of tabs over one working panel; every result reads like a price on the board */
+:root{
+  --bg:#f3f5f1; --panel:#ffffff; --ink:#18221c; --muted:#5d6b62; --line:#d9e0da;
+  --turf:#1f5c3d; --turf-soft:#e3eee7; --board:#14261c; --board-ink:#f4f1d0; --signal:#e0a100; --signal-soft:#fbf1d3;
+  --good:#1f7a45; --bad:#b3362f;
+  --f-display:"Barlow Condensed","Arial Narrow",system-ui,sans-serif;
+  --f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-num:"JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0f1512; --panel:#172019; --ink:#e6ece7; --muted:#9aa89f; --line:#2a362e;
+  --turf:#5fbf8a; --turf-soft:#1d2e24; --board:#0a120d; --board-ink:#f4f1d0; --signal:#f0b72a; --signal-soft:#2e2712;
+  --good:#5fcf8e; --bad:#ef7a70; color-scheme:dark}}
+*{box-sizing:border-box}
+html{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.5}
+[hidden]{display:none!important}
+.wrap{max-width:900px;margin:0 auto;padding-block:20px 40px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+header{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 16px;margin-bottom:16px}
+h1{font-family:var(--f-display);font-weight:700;font-size:2.2rem;letter-spacing:.01em;text-transform:uppercase;margin:0;line-height:1}
+h1 span{color:var(--signal)}
+header p{margin:0;color:var(--muted);font-size:.9rem}
+nav{display:flex;gap:2px;background:var(--board);padding:4px;border-radius:6px;overflow-x:auto}
+nav button{flex:1 0 auto;font-family:var(--f-display);font-weight:600;font-size:1rem;letter-spacing:.06em;text-transform:uppercase;
+  background:transparent;color:#a9b8ad;border:0;padding:9px 14px;border-radius:4px;cursor:pointer;white-space:nowrap}
+nav button[aria-selected="true"]{background:var(--signal);color:#1a1a0e}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+section.panel{background:var(--panel);border:1px solid var(--line);border-top:0;border-radius:0 0 8px 8px;padding:20px;display:grid;gap:18px}
+.lede{margin:0;color:var(--muted);max-width:62ch}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+label{display:grid;gap:4px;font-size:.78rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+input,select{font-family:var(--f-num);font-size:1rem;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:9px 10px;width:100%;min-width:0}
+input.name{font-family:var(--f-body)}
+.board{background:var(--board);color:var(--board-ink);border-radius:6px;padding:14px 16px;display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px 18px}
+.board div{display:grid;gap:2px;min-width:0}
+.board small{font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;color:#93a699}
+.board b{font-family:var(--f-num);font-weight:700;font-size:1.35rem;font-variant-numeric:tabular-nums;color:var(--board-ink);overflow-wrap:anywhere}
+.board b.hi{color:var(--signal)}
+.board b.pos{color:#7ee0a4} .board b.neg{color:#ff9b91}
+.verdict{font-family:var(--f-display);font-size:1.25rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:8px 12px;border-radius:5px;justify-self:start}
+.verdict.good{background:var(--turf-soft);color:var(--good)} .verdict.bad{background:color-mix(in srgb,var(--bad) 14%,transparent);color:var(--bad)}
+.rows{display:grid;gap:8px}
+.row{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr) minmax(0,1fr) 36px;gap:8px;align-items:end}
+.row.three{grid-template-columns:minmax(0,1.6fr) minmax(0,1fr) 36px}
+.row .x{height:40px;border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:5px;cursor:pointer;font-size:1.1rem}
+.row .x:hover{color:var(--bad);border-color:var(--bad)}
+.add,.btn{justify-self:start;font-family:var(--f-display);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:.95rem;background:var(--turf-soft);color:var(--turf);border:1px dashed var(--turf);border-radius:5px;padding:8px 14px;cursor:pointer}
+.btn{border-style:solid;font-size:.85rem;padding:6px 10px}
+.btn.solid{background:var(--turf);color:var(--panel)}
+.tablewrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:.92rem}
+th{text-align:left;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:8px;border-bottom:1px solid var(--line);font-family:var(--f-num);font-variant-numeric:tabular-nums}
+td:first-child{font-family:var(--f-body)}
+.note{font-size:.85rem;color:var(--muted);margin:0;max-width:65ch}
+.note code{font-family:var(--f-num);font-size:.82rem}
+
+/* Live odds */
+.live-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:5px;overflow:hidden}
+.seg button{font-family:var(--f-display);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:.95rem;border:0;background:transparent;color:var(--muted);padding:7px 16px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--board);color:var(--board-ink)}
+label.inline{display:flex;align-items:center;gap:8px}
+label.inline select{width:auto;padding:6px 8px;font-family:var(--f-body);font-size:.9rem;text-transform:none;letter-spacing:0}
+#l-status{font-size:.85rem;color:var(--muted);flex:1 1 220px}
+.matches{display:grid;gap:14px}
+.match{border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.match-head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:4px 12px;padding:10px 12px;background:var(--bg);border-bottom:1px solid var(--line)}
+.match-head h3{margin:0;font-family:var(--f-display);font-size:1.3rem;letter-spacing:.02em;text-transform:uppercase;line-height:1.1}
+.match-head time{font-size:.82rem;color:var(--muted)}
+.match table td,.match table th{padding:6px 10px}
+.match tr.sb td{background:var(--signal-soft)}
+.match tr.sb td:first-child{font-weight:600}
+.match td.best{font-weight:700;color:var(--good)}
+.match tr.bestrow td{border-bottom:0;font-weight:700}
+.match-foot{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 12px;border-top:1px solid var(--line)}
+.match-foot .lineinfo{flex:1 1 100%;font-size:.82rem;color:var(--muted)}
+.match-head .stat{font-family:var(--f-num);font-size:.9rem;font-variant-numeric:tabular-nums}
+.match-head .stat .pos{color:var(--good)} .match-head .stat .neg{color:var(--bad)}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(16px + env(safe-area-inset-bottom,0px));background:var(--board);color:var(--board-ink);padding:10px 16px;border-radius:6px;font-size:.9rem;max-width:calc(100% - 32px)}
+
+footer{margin-top:18px;font-size:.82rem;color:var(--muted);display:grid;gap:4px}
+footer strong{color:var(--ink)}
+@media (max-width:520px){
+  .row{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 36px}
+  .row .name-cell{grid-column:1 / -1}
+  .row.three{grid-template-columns:minmax(0,1fr) 36px}
+  h1{font-size:1.8rem}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Punter's <span>Toolkit</span></h1>
+    <p>Decimal odds throughout. AFL, NRL and everything else.</p>
+  </header>
+
+  <nav role="tablist" aria-label="Calculators">
+    <button role="tab" data-tab="live" aria-selected="true">Live odds</button>
+    <button role="tab" data-tab="builder" aria-selected="false">Multi builder</button>
+    <button role="tab" data-tab="value" aria-selected="false">Value &amp; Kelly</button>
+    <button role="tab" data-tab="multi" aria-selected="false">Multi</button>
+    <button role="tab" data-tab="margin" aria-selected="false">Market margin</button>
+    <button role="tab" data-tab="dutch" aria-selected="false">Dutching</button>
+    <button role="tab" data-tab="convert" aria-selected="false">Odds converter</button>
+  </nav>
+
+  <!-- LIVE ODDS -->
+  <section class="panel" data-panel="live">
+    <p class="lede">Head-to-head prices from Australian bookmakers. Your chosen bookmaker is highlighted and the best price for each team is in green. Send a market to the margin calculator or add a team to your multi.</p>
+    <div class="live-bar">
+      <div class="seg" role="group" aria-label="Competition">
+        <button type="button" data-sport="afl" aria-pressed="true">AFL</button>
+        <button type="button" data-sport="nrl" aria-pressed="false">NRL</button>
+      </div>
+      <label class="inline" for="l-book">Your bookmaker <select id="l-book"></select></label>
+      <button class="btn" type="button" id="l-refresh">Refresh</button>
+      <span id="l-status" aria-live="polite"></span>
+    </div>
+    <div class="matches" id="l-list"></div>
+  </section>
+
+  <!-- MULTI BUILDER -->
+  <section class="panel" data-panel="builder" hidden>
+    <p class="lede">Finds head-to-head combinations from the loaded odds that pay close to your target. Target 2.00 to double your stake. Each option is ranked by its estimated chance of winning, using all bookmakers' prices with their margins removed.</p>
+    <div class="grid">
+      <label>Target odds<input id="b-target" type="number" step="0.05" min="1.1" value="2.00"></label>
+      <label>Within ±
+        <select id="b-tol">
+          <option value="0.03">3%</option>
+          <option value="0.05" selected>5%</option>
+          <option value="0.10">10%</option>
+        </select>
+      </label>
+      <label>Legs
+        <select id="b-legs">
+          <option value="1-1">Singles only</option>
+          <option value="1-3" selected>1 to 3</option>
+          <option value="2-3">2 to 3</option>
+          <option value="2-4">2 to 4</option>
+        </select>
+      </label>
+      <label>Prices from
+        <select id="b-src">
+          <option value="best" selected>Best available</option>
+          <option value="sb" id="b-src-home">Your bookmaker</option>
+        </select>
+      </label>
+      <label>Stake $<input id="b-stake" type="number" step="1" min="0" value="20"></label>
+    </div>
+    <div class="board" aria-live="polite">
+      <div><small>Combinations found</small><b id="b-count">–</b></div>
+      <div><small>Return on stake</small><b id="b-ret" class="hi">–</b></div>
+      <div><small>Best est. chance</small><b id="b-best">–</b></div>
+    </div>
+    <p id="b-status" class="note"></p>
+    <div class="matches" id="b-list"></div>
+    <p class="note">A multi only pays when every leg wins, and each leg carries a bookmaker margin, so more legs means more margin against you. That's why singles near your target usually rank highest. A 2.00 price implies a 50% chance; after margins the real chance is usually a bit lower, which is the negative EV you'll see on most options. The estimate assumes legs from different matches are independent.</p>
+  </section>
+
+  <!-- VALUE & KELLY -->
+  <section class="panel" data-panel="value" hidden>
+    <p class="lede">Compare the bookie's price with your own estimate of the chance. A bet only has value when your probability is higher than the price implies.</p>
+    <div class="grid">
+      <label>Odds (decimal)<input id="v-odds" type="number" step="0.01" min="1.01" value="2.40"></label>
+      <label>Your probability %<input id="v-prob" type="number" step="0.5" min="0" max="100" value="46"></label>
+      <label>Bankroll $<input id="v-bank" type="number" step="10" min="0" value="1000"></label>
+      <label>Kelly fraction
+        <select id="v-frac">
+          <option value="1">Full Kelly</option>
+          <option value="0.5">Half Kelly</option>
+          <option value="0.25" selected>Quarter Kelly</option>
+          <option value="0.1">Tenth Kelly</option>
+        </select>
+      </label>
+    </div>
+    <div class="board" aria-live="polite">
+      <div><small>Implied prob</small><b id="v-imp">–</b></div>
+      <div><small>Fair odds (yours)</small><b id="v-fair">–</b></div>
+      <div><small>Edge</small><b id="v-edge">–</b></div>
+      <div><small>EV per $100</small><b id="v-ev">–</b></div>
+      <div><small>Suggested stake</small><b id="v-stake" class="hi">–</b></div>
+    </div>
+    <div id="v-verdict" class="verdict">–</div>
+    <p class="note">Kelly stake = <code>(b·p − q) / b</code>, where b is odds − 1, p is your probability and q = 1 − p. Full Kelly swings hard if your estimates are off, which is why most people use a quarter or half.</p>
+  </section>
+
+  <!-- MULTI -->
+  <section class="panel" data-panel="multi" hidden>
+    <p class="lede">Add each leg's price, or add teams from the Live odds tab. Optionally add your own probability per leg to see whether the multi as a whole has value.</p>
+    <div class="rows" id="m-rows"></div>
+    <button class="add" id="m-add" type="button">+ Add leg</button>
+    <div class="grid"><label>Stake $<input id="m-stake" type="number" step="1" min="0" value="20"></label></div>
+    <div class="board" aria-live="polite">
+      <div><small>Combined odds</small><b id="m-odds" class="hi">–</b></div>
+      <div><small>Return</small><b id="m-ret">–</b></div>
+      <div><small>Profit</small><b id="m-profit">–</b></div>
+      <div><small>Implied prob</small><b id="m-imp">–</b></div>
+      <div><small>Your prob</small><b id="m-yours">–</b></div>
+      <div><small>EV per $100</small><b id="m-ev">–</b></div>
+    </div>
+    <p class="note">Each leg carries the bookie's margin, and those margins multiply. A 5% margin on each of four legs works out to roughly 19% against you on the multi. Same-game multis also assume legs are independent when they often aren't.</p>
+  </section>
+
+  <!-- MARGIN -->
+  <section class="panel" data-panel="margin" hidden>
+    <p class="lede">Enter every outcome in one market (head-to-head, or win/draw/win for soccer). See how much the bookie has built in and what the fair prices would be without it.</p>
+    <div class="rows" id="g-rows"></div>
+    <button class="add" id="g-add" type="button">+ Add outcome</button>
+    <div class="board" aria-live="polite">
+      <div><small>Book total</small><b id="g-book">–</b></div>
+      <div><small>Bookie margin</small><b id="g-margin" class="hi">–</b></div>
+      <div><small>Payback</small><b id="g-payback">–</b></div>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Outcome</th><th>Price</th><th>Implied</th><th>Fair prob</th><th>Fair odds</th></tr></thead>
+      <tbody id="g-table"></tbody>
+    </table></div>
+    <p class="note">Fair odds use the proportional method: each implied probability is divided by the book total.</p>
+  </section>
+
+  <!-- DUTCH -->
+  <section class="panel" data-panel="dutch" hidden>
+    <p class="lede">Split one total stake across several selections so you get the same return whichever of them wins.</p>
+    <div class="rows" id="d-rows"></div>
+    <button class="add" id="d-add" type="button">+ Add selection</button>
+    <div class="grid"><label>Total stake $<input id="d-total" type="number" step="1" min="0" value="100"></label></div>
+    <div class="board" aria-live="polite">
+      <div><small>Return if any wins</small><b id="d-ret" class="hi">–</b></div>
+      <div><small>Profit</small><b id="d-profit">–</b></div>
+      <div><small>Combined odds</small><b id="d-odds">–</b></div>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Selection</th><th>Price</th><th>Stake</th><th>Return</th></tr></thead>
+      <tbody id="d-table"></tbody>
+    </table></div>
+    <p class="note">Stakes are rounded to the cent, so returns can differ by a few cents. If the profit shows negative, the selections' implied probabilities add up to more than 100%.</p>
+  </section>
+
+  <!-- CONVERT -->
+  <section class="panel" data-panel="convert" hidden>
+    <p class="lede">Type a price in any format to see the others. Handy for US lines and UK fractional prices.</p>
+    <div class="grid">
+      <label>Format
+        <select id="c-type">
+          <option value="dec">Decimal (2.50)</option>
+          <option value="frac">Fractional (6/4)</option>
+          <option value="us">American (+150)</option>
+          <option value="pct">Implied % (40)</option>
+        </select>
+      </label>
+      <label>Price<input id="c-in" type="text" inputmode="decimal" value="2.50"></label>
+    </div>
+    <div class="board" aria-live="polite">
+      <div><small>Decimal</small><b id="c-dec" class="hi">–</b></div>
+      <div><small>Fractional</small><b id="c-frac">–</b></div>
+      <div><small>American</small><b id="c-us">–</b></div>
+      <div><small>Implied prob</small><b id="c-pct">–</b></div>
+    </div>
+    <p id="c-err" class="note" hidden></p>
+  </section>
+
+  <footer>
+    <span>Odds via The Odds API and may lag the bookmaker's site by a few minutes. Always check the price before placing a bet.</span>
+    <span>Gambling Help Online: <strong>1800 858 858</strong> · gamblinghelponline.org.au · free and confidential, 24/7.</span>
+  </footer>
+</div>
+<div class="toast" id="toast" role="status" hidden></div>
+
+<script>
+/* Set this to your deployed Worker, e.g. "https://punters-odds.yourname.workers.dev/odds".
+   You can also pass ?odds=<url> in the page address while testing. */
+const DEFAULT_ODDS_ENDPOINT = "https://punters-odds.punters-odds.workers.dev/odds";
+const ODDS_ENDPOINT = new URLSearchParams(location.search).get("odds") || DEFAULT_ODDS_ENDPOINT;
+// The bookmaker to highlight. Defaults to Sportsbet; change it from the dropdown on the Live odds tab.
+let SB = "sportsbet";
+try{SB=localStorage.getItem("pt-book")||SB}catch(e){}
+const bookTitles={sportsbet:"Sportsbet"};
+const homeName=()=>bookTitles[SB]||SB;
+
+const $=id=>document.getElementById(id);
+const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:NaN};
+const money=n=>Number.isFinite(n)?(n<0?"−$":"$")+Math.abs(n).toLocaleString("en-AU",{minimumFractionDigits:2,maximumFractionDigits:2}):"–";
+const pct=(n,d=1)=>Number.isFinite(n)?(n*100).toFixed(d)+"%":"–";
+const odds=n=>Number.isFinite(n)&&n>0?n.toFixed(2):"–";
+const sign=(el,n)=>{el.classList.remove("pos","neg");if(Number.isFinite(n)&&n!==0)el.classList.add(n>0?"pos":"neg")};
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+let toastTimer;
+function toast(msg){const t=$("toast");t.textContent=msg;t.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.hidden=true,2600)}
+
+/* Tabs */
+const tabs=[...document.querySelectorAll("nav button")];
+function show(name){
+  tabs.forEach(t=>t.setAttribute("aria-selected",t.dataset.tab===name));
+  document.querySelectorAll("section.panel").forEach(p=>p.hidden=p.dataset.panel!==name);
+  try{localStorage.setItem("pt-tab",name)}catch(e){}
+}
+tabs.forEach(t=>t.addEventListener("click",()=>show(t.dataset.tab)));
+try{const s=localStorage.getItem("pt-tab");if(s&&tabs.some(t=>t.dataset.tab===s))show(s)}catch(e){}
+
+/* Value & Kelly */
+function calcValue(){
+  const o=num($("v-odds").value),p=num($("v-prob").value)/100,bank=num($("v-bank").value),f=num($("v-frac").value);
+  const ok=o>1&&p>=0&&p<=1;
+  const imp=ok?1/o:NaN, edge=ok?p*o-1:NaN, ev=ok?edge*100:NaN;
+  const b=o-1, k=ok?(b*p-(1-p))/b:NaN, stakeFrac=ok?Math.max(0,k)*f:NaN;
+  $("v-imp").textContent=pct(imp);
+  $("v-fair").textContent=ok&&p>0?odds(1/p):"–";
+  $("v-edge").textContent=Number.isFinite(edge)?(edge>0?"+":"")+pct(edge):"–"; sign($("v-edge"),edge);
+  $("v-ev").textContent=Number.isFinite(ev)?(ev>0?"+":"")+money(ev):"–"; sign($("v-ev"),ev);
+  $("v-stake").textContent=ok?(stakeFrac>0?money(stakeFrac*(bank||0))+" ("+pct(stakeFrac,2)+")":"$0.00"):"–";
+  const v=$("v-verdict");
+  if(!ok){v.textContent="Enter odds above 1.00";v.className="verdict"}
+  else if(edge>0){v.textContent="Value at this price";v.className="verdict good"}
+  else{v.textContent="No value, skip it";v.className="verdict bad"}
+}
+["v-odds","v-prob","v-bank","v-frac"].forEach(id=>$(id).addEventListener("input",calcValue));
+
+/* Generic row builder */
+let uid=0;
+function makeRows(container,data,cols,onChange){
+  const host=$(container);
+  function add(item){
+    const id=++uid,row=document.createElement("div");
+    row.className="row"+(cols.length===2?" three":"");
+    row.innerHTML=cols.map((c,i)=>`<label class="${i===0?"name-cell":""}">${c.label}<input id="${container}-${c.key}-${id}" data-key="${c.key}" type="${c.type}" ${c.type==="number"?'step="0.01" min="0"':'class="name"'} value="${esc(item[c.key]??"")}" placeholder="${c.ph||""}"></label>`).join("")+
+      `<button class="x" type="button" aria-label="Remove">×</button>`;
+    row.querySelector(".x").addEventListener("click",()=>{if(host.children.length>1){row.remove();onChange()}});
+    row.querySelectorAll("input").forEach(i=>i.addEventListener("input",onChange));
+    host.appendChild(row);
+  }
+  data.forEach(add);
+  return {
+    add:item=>{add(item||{});onChange()},
+    set:items=>{host.innerHTML="";items.forEach(add);onChange()},
+    count:()=>host.children.length,
+    read:()=>[...host.children].map(r=>{const o={};r.querySelectorAll("input").forEach(i=>o[i.dataset.key]=i.value);return o})
+  };
+}
+
+/* Multi */
+let multiIsExample=true;
+const multi=makeRows("m-rows",[
+  {name:"Example: Lions H2H",odds:"1.55",prob:"67"},
+  {name:"Example: Panthers −6.5",odds:"1.90",prob:"52"}
+],[{key:"name",label:"Leg",type:"text",ph:"e.g. Swans H2H"},{key:"odds",label:"Odds",type:"number"},{key:"prob",label:"Your %",type:"number",ph:"optional"}],calcMulti);
+$("m-add").addEventListener("click",()=>multi.add());
+$("m-stake").addEventListener("input",calcMulti);
+function calcMulti(){
+  const legs=multi.read().map(l=>({o:num(l.odds),p:num(l.prob)/100})).filter(l=>l.o>1);
+  const stake=num($("m-stake").value)||0;
+  if(!legs.length){["m-odds","m-ret","m-profit","m-imp","m-yours","m-ev"].forEach(i=>$(i).textContent="–");return}
+  const O=legs.reduce((a,l)=>a*l.o,1);
+  const allP=legs.every(l=>l.p>=0&&l.p<=1&&Number.isFinite(l.p));
+  const P=allP?legs.reduce((a,l)=>a*l.p,1):NaN;
+  $("m-odds").textContent=odds(O);
+  $("m-ret").textContent=money(O*stake);
+  $("m-profit").textContent=money(O*stake-stake);
+  $("m-imp").textContent=pct(1/O);
+  $("m-yours").textContent=allP?pct(P):"–";
+  const ev=allP?(P*O-1)*100:NaN;
+  $("m-ev").textContent=Number.isFinite(ev)?(ev>0?"+":"")+money(ev):"–"; sign($("m-ev"),ev);
+}
+
+/* Margin */
+const margin=makeRows("g-rows",[
+  {name:"Example: Collingwood",odds:"1.72"},
+  {name:"Example: Carlton",odds:"2.12"}
+],[{key:"name",label:"Outcome",type:"text",ph:"e.g. Draw"},{key:"odds",label:"Odds",type:"number"}],calcMargin);
+$("g-add").addEventListener("click",()=>margin.add());
+function calcMargin(){
+  const rows=margin.read().map(r=>({n:r.name||"Outcome",o:num(r.odds)})).filter(r=>r.o>1);
+  const book=rows.reduce((a,r)=>a+1/r.o,0);
+  $("g-book").textContent=rows.length?pct(book):"–";
+  $("g-margin").textContent=rows.length>1?pct(book-1,2):"–";
+  $("g-payback").textContent=rows.length>1?pct(1/book,2):"–";
+  $("g-table").innerHTML=rows.map(r=>{const imp=1/r.o,fp=imp/book;return `<tr><td>${esc(r.n)}</td><td>${odds(r.o)}</td><td>${pct(imp)}</td><td>${pct(fp)}</td><td>${odds(1/fp)}</td></tr>`}).join("");
+}
+
+/* Dutching */
+const dutch=makeRows("d-rows",[
+  {name:"Runner 3",odds:"4.50"},
+  {name:"Runner 7",odds:"6.00"},
+  {name:"Runner 11",odds:"9.00"}
+],[{key:"name",label:"Selection",type:"text",ph:"e.g. Runner 5"},{key:"odds",label:"Odds",type:"number"}],calcDutch);
+$("d-add").addEventListener("click",()=>dutch.add());
+$("d-total").addEventListener("input",calcDutch);
+function calcDutch(){
+  const rows=dutch.read().map(r=>({n:r.name||"Selection",o:num(r.odds)})).filter(r=>r.o>1);
+  const T=num($("d-total").value)||0;
+  const S=rows.reduce((a,r)=>a+1/r.o,0);
+  if(!rows.length){["d-ret","d-profit","d-odds"].forEach(i=>$(i).textContent="–");$("d-table").innerHTML="";return}
+  const ret=T/S;
+  $("d-ret").textContent=money(ret);
+  $("d-profit").textContent=money(ret-T); sign($("d-profit"),ret-T);
+  $("d-odds").textContent=odds(1/S);
+  $("d-table").innerHTML=rows.map(r=>{const s=Math.round(T*(1/r.o)/S*100)/100;return `<tr><td>${esc(r.n)}</td><td>${odds(r.o)}</td><td>${money(s)}</td><td>${money(s*r.o)}</td></tr>`}).join("");
+}
+
+/* Converter */
+function gcd(a,b){return b?gcd(b,a%b):a}
+function toFrac(d){
+  const x=d-1; let best=[Math.round(x),1],err=Math.abs(x-best[0]);
+  for(let den=1;den<=100;den++){const n=Math.round(x*den),e=Math.abs(x-n/den);if(e<err-1e-9){best=[n,den];err=e}if(e<1e-6)break}
+  const g=gcd(best[0],best[1])||1; return (best[0]/g)+"/"+(best[1]/g);
+}
+function calcConvert(){
+  const t=$("c-type").value,raw=$("c-in").value.trim();let d=NaN;
+  if(t==="dec")d=num(raw);
+  else if(t==="frac"){const m=raw.match(/^(\d+(?:\.\d+)?)\s*[\/\-]\s*(\d+(?:\.\d+)?)$/);if(m&&+m[2]>0)d=1+(+m[1])/(+m[2])}
+  else if(t==="us"){const a=num(raw.replace(/^\+/,""));if(a>=100)d=1+a/100;else if(a<=-100)d=1+100/-a}
+  else if(t==="pct"){const p=num(raw.replace("%",""));if(p>0&&p<100)d=100/p}
+  const ok=d>1, err=$("c-err");
+  err.hidden=ok||!raw;
+  err.textContent=ok?"":({dec:"Decimal odds must be above 1.00.",frac:"Use the form 6/4 or 5-2.",us:"American odds are +100 or higher, or −100 or lower.",pct:"Enter a percentage between 0 and 100."})[t];
+  $("c-dec").textContent=ok?d.toFixed(2):"–";
+  $("c-frac").textContent=ok?toFrac(d):"–";
+  $("c-us").textContent=ok?(d>=2?"+"+Math.round((d-1)*100):"−"+Math.round(100/(d-1))):"–";
+  $("c-pct").textContent=ok?pct(1/d,2):"–";
+}
+$("c-in").addEventListener("input",calcConvert);
+$("c-type").addEventListener("change",()=>{$("c-in").value={dec:"2.50",frac:"6/4",us:"+150",pct:"40"}[$("c-type").value];calcConvert()});
+
+/* Live odds */
+let liveSport="afl", liveData=null;
+const sportBtns=[...document.querySelectorAll("[data-sport]")];
+sportBtns.forEach(b=>b.addEventListener("click",()=>{
+  liveSport=b.dataset.sport;
+  sportBtns.forEach(x=>x.setAttribute("aria-pressed",x===b));
+  loadLive();
+}));
+$("l-refresh").addEventListener("click",loadLive);
+
+async function loadLive(){
+  const status=$("l-status"),list=$("l-list");
+  if(!ODDS_ENDPOINT){
+    status.textContent="";
+    list.innerHTML='<p class="note">Live odds aren\'t connected yet. Set <code>DEFAULT_ODDS_ENDPOINT</code> near the top of the script to your Worker\'s <code>/odds</code> URL.</p>';
+    return;
+  }
+  status.textContent="Loading "+liveSport.toUpperCase()+" odds…";
+  try{
+    const r=await fetch(ODDS_ENDPOINT+(ODDS_ENDPOINT.includes("?")?"&":"?")+"sport="+liveSport);
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(d.error||"the odds service returned status "+r.status);
+    liveData=d; renderLive();
+  }catch(e){
+    status.textContent="Couldn't load odds: "+e.message;
+  }
+}
+
+function pricesFor(ev){
+  const names=[ev.home,ev.away];
+  ev.books.forEach(b=>Object.keys(b.h2h).forEach(n=>{if(!names.includes(n))names.push(n)}));
+  const books=[...ev.books].sort((a,b)=>(b.key===SB)-(a.key===SB)||a.title.localeCompare(b.title));
+  const best=names.map(n=>Math.max(0,...books.map(b=>b.h2h[n]||0)));
+  return {names,books,best,sb:books.find(b=>b.key===SB)};
+}
+const overround=prices=>prices.every(p=>p>1)?prices.reduce((a,p)=>a+1/p,0)-1:NaN;
+
+function matchHTML(ev,i){
+  const {names,books,best,sb}=pricesFor(ev);
+  const when=new Date(ev.start).toLocaleString("en-AU",{weekday:"short",day:"numeric",month:"short",hour:"numeric",minute:"2-digit"});
+  const rows=books.map(b=>{
+    const prices=names.map(n=>b.h2h[n]);
+    return `<tr class="${b.key===SB?"sb":""}"><td>${esc(b.title)}</td>${prices.map((p,j)=>`<td class="${p&&p===best[j]?"best":""}">${p?odds(p):"–"}</td>`).join("")}<td>${pct(overround(prices))}</td></tr>`;
+  }).join("");
+  const bestRow=`<tr class="bestrow"><td>Best available</td>${best.map(p=>`<td>${p?odds(p):"–"}</td>`).join("")}<td>${pct(overround(best))}</td></tr>`;
+  const sbLine=sb&&sb.line.length?esc(sb.title)+" line: "+sb.line.map(l=>`${esc(l.name)} ${l.point>0?"+":""}${l.point} @ ${odds(l.price)}`).join(" · "):(sb?"":esc(homeName())+" hasn't priced this match yet.");
+  return `<article class="match">
+    <div class="match-head"><h3>${esc(ev.home)} v ${esc(ev.away)}</h3><time datetime="${esc(ev.start)}">${esc(when)}</time></div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Bookmaker</th>${names.map(n=>`<th>${esc(n)}</th>`).join("")}<th>Margin</th></tr></thead>
+      <tbody>${rows}${bestRow}</tbody>
+    </table></div>
+    <div class="match-foot">
+      ${sbLine?`<span class="lineinfo">${sbLine}</span>`:""}
+      ${sb?`<button class="btn" type="button" data-act="margin" data-src="sb" data-i="${i}">${esc(sb.title)} margin</button>`:""}
+      <button class="btn" type="button" data-act="margin" data-src="best" data-i="${i}">Best-price margin</button>
+      ${names.map((n,j)=>`<button class="btn solid" type="button" data-act="leg" data-i="${i}" data-j="${j}">+ ${esc(n)} to multi</button>`).join("")}
+    </div>
+  </article>`;
+}
+
+function fillBookPicker(){
+  const seen=new Map();
+  liveData.events.forEach(ev=>ev.books.forEach(b=>{seen.set(b.key,b.title);bookTitles[b.key]=b.title}));
+  const opts=[...seen].sort((a,b)=>a[1].localeCompare(b[1]));
+  if(!seen.has(SB))opts.unshift([SB,homeName()+" (no prices)"]);
+  $("l-book").innerHTML=opts.map(([k,t])=>`<option value="${esc(k)}"${k===SB?" selected":""}>${esc(t)}</option>`).join("");
+  $("b-src-home").textContent=seen.has(SB)?homeName():homeName()+" (no prices)";
+}
+$("l-book").addEventListener("change",e=>{
+  SB=e.target.value;
+  try{localStorage.setItem("pt-book",SB)}catch(err){}
+  if(liveData)renderLive();
+});
+
+function renderLive(){
+  const d=liveData,list=$("l-list");
+  fillBookPicker();
+  const age=Math.max(0,Math.round((Date.now()-Date.parse(d.fetchedAt))/60000));
+  const quota=d.quota&&d.quota.remaining!=null?` · ${d.quota.remaining} API requests left`:"";
+  $("l-status").textContent=`${d.events.length} match${d.events.length===1?"":"es"} · prices ${age<1?"just updated":"from "+age+" min ago"}${quota}`;
+  list.innerHTML=d.events.length?d.events.map(matchHTML).join(""):
+    '<p class="note">No upcoming matches listed right now. In the off-season the bookies may not have posted markets yet.</p>';
+  renderBuilder();
+}
+
+$("l-list").addEventListener("click",e=>{
+  const btn=e.target.closest("button[data-act]");if(!btn||!liveData)return;
+  const ev=liveData.events[+btn.dataset.i];if(!ev)return;
+  const {names,best,sb}=pricesFor(ev);
+  if(btn.dataset.act==="margin"){
+    const useSb=btn.dataset.src==="sb"&&sb;
+    margin.set(names.map((n,j)=>({name:n,odds:odds(useSb?sb.h2h[n]:best[j])})));
+    show("margin");
+  }else{
+    const j=+btn.dataset.j,n=names[j];
+    const price=sb&&sb.h2h[n]?sb.h2h[n]:best[j];
+    const leg={name:`${n} H2H`+(sb&&sb.h2h[n]?` (${sb.title})`:" (best price)"),odds:odds(price)};
+    if(multiIsExample){multi.set([leg]);multiIsExample=false}else multi.add(leg);
+    toast(`Added ${n} @ ${odds(price)}. Multi now has ${multi.count()} leg${multi.count()===1?"":"s"}.`);
+  }
+});
+
+/* Multi builder */
+// Average no-vig probability per outcome across every book that prices the full market.
+function consensus(ev,names){
+  const probs=names.map(()=>[]);
+  ev.books.forEach(b=>{
+    const p=names.map(n=>b.h2h[n]);
+    if(!p.every(x=>x>1))return;
+    const s=p.reduce((a,x)=>a+1/x,0);
+    p.forEach((x,j)=>probs[j].push(1/x/s));
+  });
+  return probs.map(a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:NaN);
+}
+
+function buildMultis(events,{target,tol,minLegs,maxLegs,source,now}){
+  const lo=target*(1-tol),hi=target*(1+tol);
+  const cands=[];
+  events.forEach((ev,ei)=>{
+    if(Date.parse(ev.start)<=now)return;
+    const {names,best,sb}=pricesFor(ev);
+    const fair=consensus(ev,names);
+    names.forEach((n,j)=>{
+      let price,book;
+      if(source==="sb"){if(!sb||!(sb.h2h[n]>1))return;price=sb.h2h[n];book=sb.title}
+      else{price=best[j];if(!(price>1))return;book=(ev.books.find(b=>b.h2h[n]===price)||{}).title||""}
+      if(price>hi)return;
+      cands.push({ei,team:n,match:`${ev.home} v ${ev.away}`,start:ev.start,price,book,p:fair[j]});
+    });
+  });
+  cands.sort((a,b)=>a.price-b.price);
+  const out=[],used=new Set(),legs=[];
+  (function dfs(from,o){
+    if(legs.length>=minLegs&&o>=lo&&o<=hi)out.push({legs:[...legs],odds:o});
+    if(legs.length===maxLegs||out.length>=5000)return;
+    for(let k=from;k<cands.length;k++){
+      const c=cands[k];
+      if(used.has(c.ei))continue;           // one leg per match
+      const next=o*c.price;
+      if(next>hi)break;                      // prices sorted ascending, so the rest are higher too
+      used.add(c.ei);legs.push(c);dfs(k+1,next);legs.pop();used.delete(c.ei);
+    }
+  })(0,1);
+  out.forEach(m=>{
+    m.p=m.legs.every(l=>Number.isFinite(l.p))?m.legs.reduce((a,l)=>a*l.p,1):NaN;
+    m.ev=m.p*m.odds-1;
+  });
+  out.sort((a,b)=>((b.ev||-9)-(a.ev||-9))||(Math.abs(a.odds-target)-Math.abs(b.odds-target)));
+  return out;
+}
+
+let builderResults=[];
+function renderBuilder(){
+  const status=$("b-status"),list=$("b-list");
+  const target=num($("b-target").value),stake=num($("b-stake").value)||0;
+  $("b-ret").textContent=target>1?money(target*stake):"–";
+  if(!liveData){
+    ["b-count","b-best"].forEach(i=>$(i).textContent="–");
+    status.textContent="Load odds in the Live odds tab first. The builder uses whichever competition is loaded there.";
+    list.innerHTML="";return;
+  }
+  if(!(target>1)){status.textContent="Target odds must be above 1.00.";list.innerHTML="";return}
+  const [minLegs,maxLegs]=$("b-legs").value.split("-").map(Number);
+  builderResults=buildMultis(liveData.events,{target,tol:num($("b-tol").value),minLegs,maxLegs,source:$("b-src").value,now:Date.now()});
+  $("b-count").textContent=builderResults.length;
+  $("b-best").textContent=builderResults.length?pct(builderResults[0].p):"–";
+  const shown=builderResults.slice(0,8);
+  status.textContent=builderResults.length
+    ?`Using ${liveData.sport.toUpperCase()} odds. Showing ${shown.length} of ${builderResults.length}, best estimated chance first.`
+    :`No ${liveData.sport.toUpperCase()} combinations land within range of ${odds(target)}. Try a wider range, more legs, or best available prices.`;
+  list.innerHTML=shown.map((m,i)=>`<article class="match">
+    <div class="match-head">
+      <h3>${m.legs.length===1?"Single":m.legs.length+"-leg multi"} @ ${odds(m.odds)}</h3>
+      <span class="stat">Est. chance ${pct(m.p)} · EV <span class="${m.ev>0?"pos":"neg"}">${Number.isFinite(m.ev)?(m.ev>0?"+":"")+money(m.ev*100):"–"}</span> per $100</span>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Team</th><th>Match</th><th>Price</th><th>Book</th><th>Est. chance</th></tr></thead>
+      <tbody>${m.legs.map(l=>`<tr><td>${esc(l.team)}</td><td>${esc(l.match)}</td><td>${odds(l.price)}</td><td>${esc(l.book)}</td><td>${pct(l.p)}</td></tr>`).join("")}</tbody>
+    </table></div>
+    <div class="match-foot">
+      <span class="lineinfo">$${stake.toLocaleString("en-AU")} returns ${money(m.odds*stake)} if every leg wins.</span>
+      <button class="btn solid" type="button" data-build="${i}">Load into Multi</button>
+    </div>
+  </article>`).join("");
+}
+["b-target","b-tol","b-legs","b-src","b-stake"].forEach(id=>$(id).addEventListener("input",renderBuilder));
+$("b-list").addEventListener("click",e=>{
+  const btn=e.target.closest("button[data-build]");if(!btn)return;
+  const m=builderResults[+btn.dataset.build];if(!m)return;
+  multi.set(m.legs.map(l=>({name:`${l.team} H2H (${l.book})`,odds:odds(l.price),prob:Number.isFinite(l.p)?(l.p*100).toFixed(1):""})));
+  multiIsExample=false;
+  $("m-stake").value=$("b-stake").value;calcMulti();
+  show("multi");
+});
+
+calcValue();calcMulti();calcMargin();calcDutch();calcConvert();renderBuilder();loadLive();
+</script>
+</body>
+</html>
