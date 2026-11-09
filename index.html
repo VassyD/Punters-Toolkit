@@ -70,6 +70,27 @@ td:first-child{font-family:var(--f-body)}
 .seg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--line);border-radius:5px;overflow:hidden;max-width:100%}
 .seg button{font-family:var(--f-display);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:.95rem;border:0;background:transparent;color:var(--muted);padding:7px 16px;cursor:pointer}
 .seg button[aria-pressed="true"]{background:var(--board);color:var(--board-ink)}
+/* Tracker */
+h2.sub{font-family:var(--f-display);font-weight:700;font-size:1.3rem;letter-spacing:.04em;text-transform:uppercase;margin:6px 0 -6px}
+.grid > button{align-self:end;height:40px}
+.span{grid-column:1 / -1}
+.note.err{color:var(--bad)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+details > summary{list-style:none;display:inline-block}
+details > summary::-webkit-details-marker{display:none}
+details[open] > summary{margin-bottom:12px}
+.pill{font-family:var(--f-display);font-weight:600;font-size:.85rem;letter-spacing:.06em;text-transform:uppercase;padding:2px 8px;border-radius:4px;background:var(--turf-soft);color:var(--turf)}
+.pill.complete{background:var(--turf);color:var(--panel)}
+.pill.busted{background:color-mix(in srgb,var(--bad) 16%,transparent);color:var(--bad)}
+.pill.stopped{background:var(--line);color:var(--muted)}
+.ladder-bar{height:8px;background:var(--line);margin:0 12px;border-radius:4px;overflow:hidden}
+.ladder-bar span{display:block;height:100%;background:var(--signal)}
+.ladder-meta{display:flex;justify-content:space-between;gap:8px;padding:6px 12px 0;font-family:var(--f-num);font-size:.82rem;color:var(--muted);font-variant-numeric:tabular-nums}
+#t-log select{width:auto;padding:4px 6px;font-family:var(--f-body);font-size:.85rem}
+#t-log td small{display:block;color:var(--muted);font-family:var(--f-body)}
+#t-log .pos,.ladder td.pos{color:var(--good)} #t-log .neg,.ladder td.neg{color:var(--bad)}
+.del{border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:4px;padding:3px 8px;cursor:pointer;font-size:.8rem;white-space:nowrap}
+.del.armed{border-color:var(--bad);color:var(--bad)}
 label.inline{display:flex;align-items:center;gap:8px}
 label.inline select{width:auto;padding:6px 8px;font-family:var(--f-body);font-size:.9rem;text-transform:none;letter-spacing:0}
 #l-status{font-size:.85rem;color:var(--muted);flex:1 1 220px}
@@ -109,6 +130,7 @@ footer strong{color:var(--ink)}
   <nav role="tablist" aria-label="Calculators">
     <button role="tab" data-tab="live" aria-selected="true">Live odds</button>
     <button role="tab" data-tab="builder" aria-selected="false">Multi builder</button>
+    <button role="tab" data-tab="tracker" aria-selected="false">Tracker</button>
     <button role="tab" data-tab="value" aria-selected="false">Value &amp; Kelly</button>
     <button role="tab" data-tab="multi" aria-selected="false">Multi</button>
     <button role="tab" data-tab="margin" aria-selected="false">Market margin</button>
@@ -173,6 +195,59 @@ footer strong{color:var(--ink)}
     <p class="note">A multi only pays when every leg wins, and each leg carries a bookmaker margin, so more legs means more margin against you. That's why singles near your target usually rank highest. A 2.00 price implies a 50% chance; after margins the real chance is usually a bit lower, which is the negative EV you'll see on most options. The estimate assumes legs from different matches are independent.</p>
   </section>
 
+  <!-- TRACKER -->
+  <section class="panel" data-panel="tracker" hidden>
+    <div class="live-bar">
+      <span id="t-sync" aria-live="polite"></span>
+      <button class="btn" type="button" id="t-syncnow">Sync now</button>
+    </div>
+    <form id="t-login" class="grid" hidden>
+      <p class="note span">Enter the tracker passcode you set on the Worker. Each device only asks once.</p>
+      <label>Passcode<input id="t-pass" type="password" autocomplete="current-password"></label>
+      <button class="btn solid" type="submit">Connect</button>
+    </form>
+
+    <div class="board" aria-live="polite">
+      <div><small>Profit / loss</small><b id="t-pl">–</b></div>
+      <div><small>Total staked</small><b id="t-staked">–</b></div>
+      <div><small>Return on stake</small><b id="t-roi">–</b></div>
+      <div><small>Win rate</small><b id="t-wr">–</b></div>
+      <div><small>Pending</small><b id="t-pend">–</b></div>
+    </div>
+
+    <h2 class="sub">Challenges</h2>
+    <div class="matches" id="t-challenges"></div>
+    <details id="t-newch">
+      <summary class="add">+ New challenge</summary>
+      <form id="t-chform" class="grid">
+        <label>Name<input id="t-chname" type="text" class="name" value="$10 to $1,000"></label>
+        <label>Starting stake $<input id="t-chstart" type="number" step="1" min="1" value="10"></label>
+        <label>Target $<input id="t-chtarget" type="number" step="10" min="2" value="1000"></label>
+        <button class="btn solid" type="submit">Start challenge</button>
+      </form>
+    </details>
+
+    <h2 class="sub" id="t-loghead">Log a bet</h2>
+    <form id="t-betform" class="grid">
+      <label class="span">Bet<input id="t-desc" type="text" class="name" placeholder="e.g. Swans H2H + Crows H2H"></label>
+      <label>Bookmaker<input id="t-book" type="text" class="name" list="t-books" placeholder="e.g. TAB"></label>
+      <label>Odds<input id="t-odds" type="number" step="0.01" min="1.01"></label>
+      <label>Stake $<input id="t-stake" type="number" step="0.01" min="0.01"></label>
+      <label>Date<input id="t-date" type="date"></label>
+      <label>Challenge<select id="t-chsel"><option value="">None</option></select></label>
+      <button class="btn solid" type="submit">Log bet</button>
+    </form>
+    <datalist id="t-books"></datalist>
+    <p id="t-formerr" class="note err" hidden></p>
+
+    <h2 class="sub">Bet log</h2>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Date</th><th>Bet</th><th>Odds</th><th>Stake</th><th>Result</th><th>P/L</th><th><span class="sr">Delete</span></th></tr></thead>
+      <tbody id="t-log"></tbody>
+    </table></div>
+    <p class="note">Set each bet's result once it's settled. Void bets return the stake and don't count towards win rate. Data syncs through your Worker and can only be read with your passcode.</p>
+  </section>
+
   <!-- VALUE & KELLY -->
   <section class="panel" data-panel="value" hidden>
     <p class="lede">Compare the bookie's price with your own estimate of the chance. A bet only has value when your probability is higher than the price implies.</p>
@@ -205,7 +280,7 @@ footer strong{color:var(--ink)}
     <p class="lede">Add each leg's price, or add teams from the Live odds tab. Optionally add your own probability per leg to see whether the multi as a whole has value.</p>
     <div class="rows" id="m-rows"></div>
     <button class="add" id="m-add" type="button">+ Add leg</button>
-    <div class="grid"><label>Stake $<input id="m-stake" type="number" step="1" min="0" value="20"></label></div>
+    <div class="grid"><label>Stake $<input id="m-stake" type="number" step="1" min="0" value="20"></label><button class="btn solid" type="button" id="m-log">Log this bet</button></div>
     <div class="board" aria-live="polite">
       <div><small>Combined odds</small><b id="m-odds" class="hi">–</b></div>
       <div><small>Return</small><b id="m-ret">–</b></div>
