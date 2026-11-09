@@ -67,7 +67,7 @@ td:first-child{font-family:var(--f-body)}
 
 /* Live odds */
 .live-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
-.seg{display:inline-flex;border:1px solid var(--line);border-radius:5px;overflow:hidden}
+.seg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--line);border-radius:5px;overflow:hidden;max-width:100%}
 .seg button{font-family:var(--f-display);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:.95rem;border:0;background:transparent;color:var(--muted);padding:7px 16px;cursor:pointer}
 .seg button[aria-pressed="true"]{background:var(--board);color:var(--board-ink)}
 label.inline{display:flex;align-items:center;gap:8px}
@@ -123,6 +123,10 @@ footer strong{color:var(--ink)}
       <div class="seg" role="group" aria-label="Competition">
         <button type="button" data-sport="afl" aria-pressed="true">AFL</button>
         <button type="button" data-sport="nrl" aria-pressed="false">NRL</button>
+        <button type="button" data-sport="nba" aria-pressed="false">NBA</button>
+        <button type="button" data-sport="aleague" aria-pressed="false">A-League</button>
+        <button type="button" data-sport="bbl" aria-pressed="false">BBL</button>
+        <button type="button" data-sport="mlb" aria-pressed="false">MLB</button>
       </div>
       <label class="inline" for="l-book">Your bookmaker <select id="l-book"></select></label>
       <button class="btn" type="button" id="l-refresh">Refresh</button>
@@ -435,6 +439,8 @@ $("c-type").addEventListener("change",()=>{$("c-in").value={dec:"2.50",frac:"6/4
 
 /* Live odds */
 let liveSport="afl", liveData=null;
+const SPORT_NAMES={afl:"AFL",nrl:"NRL",nba:"NBA",aleague:"A-League",bbl:"BBL",mlb:"MLB"};
+const sportName=k=>SPORT_NAMES[k]||String(k).toUpperCase();
 const sportBtns=[...document.querySelectorAll("[data-sport]")];
 sportBtns.forEach(b=>b.addEventListener("click",()=>{
   liveSport=b.dataset.sport;
@@ -450,7 +456,7 @@ async function loadLive(){
     list.innerHTML='<p class="note">Live odds aren\'t connected yet. Set <code>DEFAULT_ODDS_ENDPOINT</code> near the top of the script to your Worker\'s <code>/odds</code> URL.</p>';
     return;
   }
-  status.textContent="Loading "+liveSport.toUpperCase()+" odds…";
+  status.textContent="Loading "+sportName(liveSport)+" odds…";
   try{
     const r=await fetch(ODDS_ENDPOINT+(ODDS_ENDPOINT.includes("?")?"&":"?")+"sport="+liveSport);
     const d=await r.json().catch(()=>({}));
@@ -515,7 +521,9 @@ function renderLive(){
   const quota=d.quota&&d.quota.remaining!=null?` · ${d.quota.remaining} API requests left`:"";
   $("l-status").textContent=`${d.events.length} match${d.events.length===1?"":"es"} · prices ${age<1?"just updated":"from "+age+" min ago"}${quota}`;
   list.innerHTML=d.events.length?d.events.map(matchHTML).join(""):
-    '<p class="note">No upcoming matches listed right now. In the off-season the bookies may not have posted markets yet.</p>';
+    `<p class="note">${d.offSeason
+      ?`${esc(sportName(d.sport))} is out of season, so there are no markets yet. Check back closer to the start of the season.`
+      :`No upcoming ${esc(sportName(d.sport))} matches listed right now. The bookies may not have posted markets yet.`}</p>`;
   renderBuilder();
 }
 
@@ -602,8 +610,8 @@ function renderBuilder(){
   $("b-best").textContent=builderResults.length?pct(builderResults[0].p):"–";
   const shown=builderResults.slice(0,8);
   status.textContent=builderResults.length
-    ?`Using ${liveData.sport.toUpperCase()} odds. Showing ${shown.length} of ${builderResults.length}, best estimated chance first.`
-    :`No ${liveData.sport.toUpperCase()} combinations land within range of ${odds(target)}. Try a wider range, more legs, or best available prices.`;
+    ?`Using ${sportName(liveData.sport)} odds. Showing ${shown.length} of ${builderResults.length}, best estimated chance first.`
+    :`No ${sportName(liveData.sport)} combinations land within range of ${odds(target)}. Try a wider range, more legs, or best available prices.`;
   list.innerHTML=shown.map((m,i)=>`<article class="match">
     <div class="match-head">
       <h3>${m.legs.length===1?"Single":m.legs.length+"-leg multi"} @ ${odds(m.odds)}</h3>
