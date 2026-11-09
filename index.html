@@ -371,7 +371,7 @@ const homeName=()=>bookTitles[SB]||SB;
 const $=id=>document.getElementById(id);
 const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:NaN};
 const money=n=>Number.isFinite(n)?(n<0?"−$":"$")+Math.abs(n).toLocaleString("en-AU",{minimumFractionDigits:2,maximumFractionDigits:2}):"–";
-const pct=(n,d=1)=>Number.isFinite(n)?(n*100).toFixed(d)+"%":"–";
+const pct=(n,d=1)=>Number.isFinite(n)?(n*100).toFixed(d).replace("-","−")+"%":"–";
 const odds=n=>Number.isFinite(n)&&n>0?n.toFixed(2):"–";
 const sign=(el,n)=>{el.classList.remove("pos","neg");if(Number.isFinite(n)&&n!==0)el.classList.add(n>0?"pos":"neg")};
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -385,6 +385,7 @@ function show(name){
   tabs.forEach(t=>t.setAttribute("aria-selected",t.dataset.tab===name));
   document.querySelectorAll("section.panel").forEach(p=>p.hidden=p.dataset.panel!==name);
   try{localStorage.setItem("pt-tab",name)}catch(e){}
+  if(name==="tracker"&&window.trackerReady)sync();
 }
 tabs.forEach(t=>t.addEventListener("click",()=>show(t.dataset.tab)));
 try{const s=localStorage.getItem("pt-tab");if(s&&tabs.some(t=>t.dataset.tab===s))show(s)}catch(e){}
@@ -711,6 +712,249 @@ $("b-list").addEventListener("click",e=>{
   $("m-stake").value=$("b-stake").value;calcMulti();
   show("multi");
 });
+
+/* Tracker */
+const TRACKER_ENDPOINT=ODDS_ENDPOINT?ODDS_ENDPOINT.replace(/\/odds(\?.*)?$/,"/tracker"):"";
+const store={
+  get:k=>{try{return localStorage.getItem(k)}catch(e){return null}},
+  set:(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}},
+  del:k=>{try{localStorage.removeItem(k)}catch(e){}}
+};
+const newId=()=>(window.crypto&&crypto.randomUUID)?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2);
+const nowIso=()=>new Date().toISOString();
+const todayStr=()=>new Date().toLocaleDateString("en-CA");
+
+let T={challenges:[],bets:[]};
+try{const s=JSON.parse(store.get("pt-tracker")||"null");if(s&&Array.isArray(s.bets))T={challenges:Array.isArray(s.challenges)?s.challenges:[],bets:s.bets}}catch(e){}
+let dirty=store.get("pt-tracker-dirty")==="1";
+let token=store.get("pt-token")||"";
+let rev=0,syncTimer=null,syncing=false;
+
+function mergeById(a,b){
+  const out=new Map();
+  for(const it of [...(Array.isArray(a)?a:[]),...(Array.isArray(b)?b:[])]){
+    if(!it||typeof it.id!=="string")continue;
+    const cur=out.get(it.id);
+    if(!cur||String(it.updatedAt||"")>String(cur.updatedAt||""))out.set(it.id,it);
+  }
+  return [...out.values()];
+}
+const liveBets=()=>T.bets.filter(b=>!b.deleted);
+const liveChallenges=()=>T.challenges.filter(c=>!c.deleted);
+const findBet=id=>T.bets.find(b=>b.id===id);
+const findCh=id=>T.challenges.find(c=>c.id===id);
+
+function saveLocal(){store.set("pt-tracker",JSON.stringify(T));store.set("pt-tracker-dirty",dirty?"1":"0")}
+function change(fn){fn();rev++;dirty=true;saveLocal();renderTracker();clearTimeout(syncTimer);syncTimer=setTimeout(sync,800)}
+const setSync=msg=>$("t-sync").textContent=msg;
+
+async function sync(){
+  clearTimeout(syncTimer);
+  if(!TRACKER_ENDPOINT){setSync("Saved on this device. Set the Worker address to sync between devices.");return}
+  if(!token){$("t-login").hidden=false;setSync(dirty?"Saved on this device. Enter your passcode to sync.":"Enter your passcode to sync between devices.");return}
+  if(syncing){syncTimer=setTimeout(sync,800);return}
+  syncing=true;setSync("Syncing…");
+  const sentRev=rev,sending=dirty;
+  try{
+    const r=await fetch(TRACKER_ENDPOINT,{
+      method:sending?"PUT":"GET",
+      headers:{"Authorization":"Bearer "+token,...(sending?{"Content-Type":"application/json"}:{})},
+      body:sending?JSON.stringify(T):undefined
+    });
+    const d=await r.json().catch(()=>({}));
+    if(r.status===401){token="";store.del("pt-token");$("t-login").hidden=false;throw new Error("the passcode was wrong. Enter it again.")}
+    if(!r.ok)throw new Error(d.error||"the Worker returned status "+r.status);
+    T={challenges:mergeById(T.challenges,d.challenges),bets:mergeById(T.bets,d.bets)};
+    if(rev===sentRev)dirty=false;else syncTimer=setTimeout(sync,800);
+    saveLocal();renderTracker();
+    setSync("Synced at "+new Date().toLocaleTimeString("en-AU",{hour:"numeric",minute:"2-digit"}));
+  }catch(e){
+    setSync((dirty?"Saved on this device but not synced: ":"Couldn't sync: ")+(e.message||"no connection"));
+  }finally{syncing=false}
+}
+
+// Ladder: every settled step changes the bank by that bet's profit or loss.
+function ladder(ch){
+  const steps=liveBets().filter(b=>b.challengeId===ch.id).sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt)));
+  let bank=ch.start;
+  const rows=steps.map((b,i)=>{
+    if(b.result==="won")bank=bank-b.stake+b.stake*b.odds;
+    else if(b.result==="lost")bank=bank-b.stake;
+    return {b,n:i+1,after:b.result==="pending"?null:Math.round(bank*100)/100};
+  });
+  bank=Math.round(bank*100)/100;
+  const pending=steps.some(b=>b.result==="pending");
+  let state="active";
+  if(bank<0.01)state="busted";
+  else if(bank>=ch.target)state="complete";
+  else if(ch.stopped)state="stopped";
+  return {rows,bank,state,pending};
+}
+
+function challengeHTML(ch){
+  const L=ladder(ch);
+  const span=Math.log(ch.target/ch.start);
+  const prog=L.bank>0&&span>0?Math.min(1,Math.max(0,Math.log(L.bank/ch.start)/span)):0;
+  const togo=L.state==="active"&&L.bank>0?Math.max(1,Math.ceil(Math.log(ch.target/L.bank)/Math.LN2-1e-9)):0;
+  const label={active:"In progress",complete:"Target reached",busted:"Busted",stopped:"Stopped"}[L.state];
+  let foot="";
+  if(L.state==="active"&&L.pending)foot=`<span class="lineinfo">Step ${L.rows.length} is running. Set its result in the bet log below.</span>`;
+  else if(L.state==="active")foot=`<span class="lineinfo">Bank ${money(L.bank)}. About ${togo} more win${togo===1?"":"s"} at 2.00 to reach ${money(ch.target)}. At a 48% chance each, that's roughly ${pct(Math.pow(0.48,togo))} from here.</span>
+    <button class="btn solid" type="button" data-ch-act="step" data-id="${esc(ch.id)}">Add next step (${money(L.bank)})</button>
+    <button class="btn" type="button" data-ch-act="stop" data-id="${esc(ch.id)}">Stop here</button>`;
+  else if(L.state==="complete")foot=`<span class="lineinfo">Reached ${money(L.bank)} in ${L.rows.length} step${L.rows.length===1?"":"s"}.</span>`;
+  else if(L.state==="busted")foot=`<span class="lineinfo">Lost at step ${L.rows.length}. Total lost: ${money(ch.start)}.</span>`;
+  else foot=`<span class="lineinfo">Stopped with ${money(L.bank)} from a ${money(ch.start)} start.</span>`;
+  foot+=`<button class="del" type="button" data-ch-act="delete" data-id="${esc(ch.id)}">Delete challenge</button>`;
+  const rows=L.rows.map(r=>`<tr><td>${r.n}</td><td>${esc(r.b.desc)}</td><td>${odds(r.b.odds)}</td><td>${money(r.b.stake)}</td><td>${esc(resultName(r.b.result))}</td><td class="${r.b.result==="won"?"pos":r.b.result==="lost"?"neg":""}">${r.after==null?"–":money(r.after)}</td></tr>`).join("");
+  return `<article class="match ladder">
+    <div class="match-head"><h3>${esc(ch.name||"Challenge")}</h3><span class="pill ${L.state}">${label}</span></div>
+    <div class="ladder-meta"><span>${money(ch.start)}</span><span>Bank ${money(L.bank)}</span><span>${money(ch.target)}</span></div>
+    <div class="ladder-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(prog*100)}"><span style="width:${(prog*100).toFixed(1)}%"></span></div>
+    ${rows?`<div class="tablewrap"><table><thead><tr><th>Step</th><th>Bet</th><th>Odds</th><th>Stake</th><th>Result</th><th>Bank after</th></tr></thead><tbody>${rows}</tbody></table></div>`:`<p class="note" style="padding:10px 12px 0">No steps yet. Add the first one with ${money(ch.start)}.</p>`}
+    <div class="match-foot">${foot}</div>
+  </article>`;
+}
+
+const resultName=r=>({pending:"Pending",won:"Won",lost:"Lost",void:"Void"})[r]||r;
+const betPL=b=>b.result==="won"?b.stake*(b.odds-1):b.result==="lost"?-b.stake:b.result==="void"?0:NaN;
+
+function renderTracker(){
+  const bets=liveBets(),chs=liveChallenges();
+  // Stats
+  const settled=bets.filter(b=>b.result==="won"||b.result==="lost");
+  const staked=settled.reduce((a,b)=>a+b.stake,0);
+  const pl=settled.reduce((a,b)=>a+betPL(b),0);
+  const won=settled.filter(b=>b.result==="won").length;
+  const pend=bets.filter(b=>b.result==="pending");
+  $("t-pl").textContent=settled.length?(pl>0?"+":"")+money(pl):"–"; sign($("t-pl"),settled.length?pl:NaN);
+  $("t-staked").textContent=settled.length?money(staked):"–";
+  $("t-roi").textContent=staked>0?(pl>0?"+":"")+pct(pl/staked):"–"; sign($("t-roi"),staked>0?pl:NaN);
+  $("t-wr").textContent=settled.length?`${pct(won/settled.length,0)} (${won}/${settled.length})`:"–";
+  $("t-pend").textContent=pend.length?`${pend.length} · ${money(pend.reduce((a,b)=>a+b.stake,0))}`:"0";
+
+  // Challenges, newest first, active ones on top
+  const order={active:0,stopped:1,complete:1,busted:1};
+  const sorted=[...chs].sort((a,b)=>(order[ladder(a).state]-order[ladder(b).state])||String(b.createdAt).localeCompare(String(a.createdAt)));
+  $("t-challenges").innerHTML=sorted.length?sorted.map(challengeHTML).join(""):'<p class="note">No challenges yet. Start one below: a starting stake, a target, and every win rolls into the next bet.</p>';
+
+  // Challenge picker in the bet form: only challenges ready for their next step
+  const sel=$("t-chsel"),keep=sel.value;
+  const ready=chs.filter(c=>{const L=ladder(c);return L.state==="active"&&!L.pending});
+  sel.innerHTML='<option value="">None</option>'+ready.map(c=>`<option value="${esc(c.id)}">${esc(c.name||"Challenge")}</option>`).join("");
+  if(ready.some(c=>c.id===keep))sel.value=keep;
+
+  // Bookmaker suggestions
+  const names=new Set([...Object.values(bookTitles),...bets.map(b=>b.book).filter(Boolean)]);
+  $("t-books").innerHTML=[...names].map(n=>`<option value="${esc(n)}"></option>`).join("");
+
+  // Bet log, newest first
+  const log=[...bets].sort((a,b)=>String(b.date).localeCompare(String(a.date))||String(b.createdAt).localeCompare(String(a.createdAt)));
+  $("t-log").innerHTML=log.length?log.map(b=>{
+    const p=betPL(b),ch=b.challengeId?findCh(b.challengeId):null;
+    const sub=[b.book,ch&&!ch.deleted?ch.name:""].filter(Boolean).map(esc).join(" · ");
+    return `<tr>
+      <td>${esc(b.date||"")}</td>
+      <td>${esc(b.desc)}${sub?`<small>${sub}</small>`:""}</td>
+      <td>${odds(b.odds)}</td>
+      <td>${money(b.stake)}</td>
+      <td><select data-res="${esc(b.id)}" aria-label="Result">${["pending","won","lost","void"].map(r=>`<option value="${r}"${b.result===r?" selected":""}>${resultName(r)}</option>`).join("")}</select></td>
+      <td class="${p>0?"pos":p<0?"neg":""}">${Number.isFinite(p)?(p>0?"+":"")+money(p):"–"}</td>
+      <td><button class="del" type="button" data-del-bet="${esc(b.id)}">Delete</button></td>
+    </tr>`;
+  }).join(""):'<tr><td colspan="7">No bets logged yet.</td></tr>';
+}
+
+// Two-tap delete so nothing goes with one stray tap
+function armOrRun(btn,run){
+  if(btn.classList.contains("armed")){run();return}
+  btn.classList.add("armed");const was=btn.textContent;btn.textContent="Tap again to delete";
+  setTimeout(()=>{if(btn.isConnected){btn.classList.remove("armed");btn.textContent=was}},3000);
+}
+
+$("t-log").addEventListener("change",e=>{
+  const s=e.target.closest("select[data-res]");if(!s)return;
+  const b=findBet(s.dataset.res);if(!b)return;
+  change(()=>{b.result=s.value;b.updatedAt=nowIso()});
+});
+$("t-log").addEventListener("click",e=>{
+  const btn=e.target.closest("button[data-del-bet]");if(!btn)return;
+  armOrRun(btn,()=>{const b=findBet(btn.dataset.delBet);if(b)change(()=>{b.deleted=true;b.updatedAt=nowIso()})});
+});
+$("t-challenges").addEventListener("click",e=>{
+  const btn=e.target.closest("button[data-ch-act]");if(!btn)return;
+  const ch=findCh(btn.dataset.id);if(!ch)return;
+  const act=btn.dataset.chAct;
+  if(act==="step"){
+    renderTracker();
+    $("t-chsel").value=ch.id;$("t-stake").value=ladder(ch).bank.toFixed(2);
+    $("t-loghead").scrollIntoView({behavior:"smooth",block:"start"});$("t-desc").focus({preventScroll:true});
+  }else if(act==="stop"){
+    change(()=>{ch.stopped=true;ch.updatedAt=nowIso()});
+  }else if(act==="delete"){
+    armOrRun(btn,()=>change(()=>{ch.deleted=true;ch.updatedAt=nowIso()}));
+  }
+});
+
+$("t-chsel").addEventListener("change",()=>{
+  const ch=findCh($("t-chsel").value);
+  if(ch)$("t-stake").value=ladder(ch).bank.toFixed(2);
+});
+
+$("t-chform").addEventListener("submit",e=>{
+  e.preventDefault();
+  const name=$("t-chname").value.trim()||"Challenge",start=num($("t-chstart").value),target=num($("t-chtarget").value);
+  if(!(start>0)||!(target>start)){toast("The target needs to be bigger than the starting stake.");return}
+  const t=nowIso();
+  change(()=>T.challenges.push({id:newId(),name,start,target,createdAt:t,updatedAt:t}));
+  $("t-newch").open=false;
+  toast(`Started "${name}". Add the first step in Log a bet.`);
+});
+
+$("t-betform").addEventListener("submit",e=>{
+  e.preventDefault();
+  const err=$("t-formerr");
+  const desc=$("t-desc").value.trim(),o=num($("t-odds").value),stake=num($("t-stake").value),chId=$("t-chsel").value;
+  const problem=!desc?"Describe the bet.":!(o>1)?"Odds need to be above 1.00.":!(stake>0)?"Enter a stake.":"";
+  if(problem){err.textContent=problem;err.hidden=false;return}
+  if(chId){
+    const ch=findCh(chId),L=ch&&ladder(ch);
+    if(!L||L.state!=="active"||L.pending){err.textContent="That challenge isn't ready for another step.";err.hidden=false;return}
+    if(stake>L.bank+0.005){err.textContent=`The stake is more than the challenge bank (${money(L.bank)}).`;err.hidden=false;return}
+  }
+  err.hidden=true;
+  const t=nowIso();
+  change(()=>T.bets.push({id:newId(),createdAt:t,updatedAt:t,date:$("t-date").value||todayStr(),desc,book:$("t-book").value.trim(),odds:o,stake,result:"pending",challengeId:chId||undefined}));
+  $("t-desc").value="";$("t-odds").value="";$("t-chsel").value="";
+  toast("Bet logged. Set the result once it's settled.");
+});
+
+$("t-login").addEventListener("submit",e=>{
+  e.preventDefault();
+  const p=$("t-pass").value.trim();if(!p)return;
+  token=p;store.set("pt-token",p);$("t-pass").value="";$("t-login").hidden=true;sync();
+});
+$("t-syncnow").addEventListener("click",sync);
+document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")sync()});
+window.addEventListener("online",sync);
+
+// Multi tab: send the current multi to the bet form
+$("m-log").addEventListener("click",()=>{
+  const legs=multi.read().filter(l=>num(l.odds)>1);
+  if(!legs.length){toast("Add at least one leg with odds first.");return}
+  const O=legs.reduce((a,l)=>a*num(l.odds),1);
+  $("t-desc").value=legs.map(l=>l.name||"Leg").join(" + ");
+  $("t-odds").value=O.toFixed(2);
+  $("t-stake").value=num($("m-stake").value)>0?num($("m-stake").value).toFixed(2):"";
+  $("t-chsel").value="";
+  show("tracker");
+  $("t-loghead").scrollIntoView({behavior:"smooth",block:"start"});
+});
+
+$("t-date").value=todayStr();
+renderTracker();
+window.trackerReady=true;
+sync();
 
 calcValue();calcMulti();calcMargin();calcDutch();calcConvert();renderBuilder();loadLive();
 </script>
