@@ -153,6 +153,7 @@ footer strong{color:var(--ink)}
         <button type="button" data-sport="mlb" aria-pressed="false">MLB</button>
       </div>
       <label class="inline" for="l-book">Your bookmaker <select id="l-book"></select></label>
+      <label class="inline" for="l-market">Market <select id="l-market"><option value="h2h">Head-to-head</option></select></label>
       <label class="inline" for="l-lines"><input id="l-lines" type="checkbox"> Line odds</label>
       <button class="btn" type="button" id="l-refresh">Refresh</button>
       <span id="l-status" aria-live="polite"></span>
@@ -167,7 +168,7 @@ footer strong{color:var(--ink)}
 
   <!-- MULTI BUILDER -->
   <section class="panel" data-panel="builder" hidden>
-    <p class="lede">Finds head-to-head combinations from the loaded odds that pay close to your target. Target 2.00 to double your stake. Each option is ranked by its estimated chance of winning, using all bookmakers' prices with their margins removed.</p>
+    <p class="lede">Finds combinations from the head-to-head odds and any player markets you've loaded that pay close to your target, one leg per match. Target 2.00 to double your stake. Each option is ranked by its estimated chance of winning, using all bookmakers' prices with their margins removed.</p>
     <div class="grid">
       <label>Target odds<input id="b-target" type="number" step="0.05" min="1.1" value="2.00"></label>
       <label>Within ±
@@ -189,6 +190,13 @@ footer strong{color:var(--ink)}
         <select id="b-src">
           <option value="best" selected>Best available</option>
           <option value="sb" id="b-src-home">Your bookmaker</option>
+        </select>
+      </label>
+      <label>Legs from
+        <select id="b-pool">
+          <option value="both" selected>Head-to-head and players</option>
+          <option value="h2h">Head-to-head only</option>
+          <option value="props">Player markets only</option>
         </select>
       </label>
       <label>Stake $<input id="b-stake" type="number" step="1" min="0" value="20"></label>
