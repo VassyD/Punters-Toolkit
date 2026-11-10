@@ -102,7 +102,8 @@ label.inline select{width:auto;padding:6px 8px;font-family:var(--f-body);font-si
 .match-head h3{margin:0;font-family:var(--f-display);font-size:1.3rem;letter-spacing:.02em;text-transform:uppercase;line-height:1.1}
 .match-head time{font-size:.82rem;color:var(--muted)}
 .match table td,.match table th{padding:6px 10px}
-.match tr.sb td{background:var(--signal-soft)}
+.match tr.sb td,.match td.sbcol,.match th.sbcol{background:var(--signal-soft)}
+.match td .btn{padding:2px 10px;font-size:.95rem}
 .match tr.sb td:first-child{font-weight:600}
 .match td.best{font-weight:700;color:var(--good)}
 .match tr.bestrow td{border-bottom:0;font-weight:700}
@@ -556,8 +557,148 @@ const sportBtns=[...document.querySelectorAll("[data-sport]")];
 sportBtns.forEach(b=>b.addEventListener("click",()=>{
   liveSport=b.dataset.sport;
   sportBtns.forEach(x=>x.setAttribute("aria-pressed",x===b));
+  fillMarketPicker();
   loadLive();
 }));
+
+// Player markets offered per competition. Keys match the Worker's list; each costs 1 credit per match to load.
+const PLAYER_MARKETS={
+  nba:{player_points:"Player points",player_rebounds:"Player rebounds",player_assists:"Player assists"},
+  afl:{player_disposals:"Disposals (over/under)",player_disposals_over:"Disposals (15+, 20+…)",player_goal_scorer_anytime:"Anytime goalscorer",player_goals_scored_over:"Goals (2+, 3+…)",player_marks_over:"Marks (5+…)"},
+  nrl:{player_try_scorer_anytime:"Anytime tryscorer",player_try_scorer_first:"First tryscorer",player_try_scorer_over:"Tries (2+…)"}
+};
+const MARKET_UNITS={player_points:"points",player_rebounds:"rebounds",player_assists:"assists",player_disposals:"disposals",player_disposals_over:"disposals",player_goals_scored_over:"goals",player_marks_over:"marks",player_try_scorer_over:"tries"};
+let liveMarket="h2h",lastQuota=null,eventsList=null;
+const propsData=new Map(); // "eventId|market" -> one match's player market
+const marketName=m=>m==="h2h"?"Head-to-head":Object.values(PLAYER_MARKETS).map(x=>x[m]).find(Boolean)||m;
+function fillMarketPicker(){
+  const ms=PLAYER_MARKETS[liveSport]||{};
+  if(liveMarket!=="h2h"&&!ms[liveMarket])liveMarket="h2h";
+  $("l-market").innerHTML='<option value="h2h">Head-to-head</option>'+Object.entries(ms).map(([k,v])=>`<option value="${k}"${k===liveMarket?" selected":""}>${esc(v)}</option>`).join("");
+  $("l-market").disabled=!Object.keys(ms).length;
+  $("l-lines").closest("label").hidden=liveMarket!=="h2h";
+}
+$("l-market").addEventListener("change",e=>{liveMarket=e.target.value;$("l-lines").closest("label").hidden=liveMarket!=="h2h";loadLive()});
+
+// Calls a Worker route that sits next to /odds, with the passcode.
+async function api(path){
+  const base=ODDS_ENDPOINT.replace(/\/odds(\?.*)?$/,"");
+  const r=await fetch(base+path,{headers:{"Authorization":"Bearer "+token}});
+  const d=await r.json().catch(()=>({}));
+  if(r.status===401){clearToken();throw new Error("the passcode was wrong. Enter it again.")}
+  if(!r.ok)throw new Error(d.error||"the odds service returned status "+r.status);
+  if(d.quota&&d.quota.remaining!=null)lastQuota=d.quota.remaining;
+  return d;
+}
+
+// Same rules as the Worker: over/under pairs have the margin removed; one-sided selections are rough.
+const OPPOSITE={Over:"Under",Under:"Over",Yes:"No",No:"Yes"};
+const selKey=o=>`${o.player}|${o.side}|${o.point??""}`;
+function fairProps(pm){
+  const pairs=new Map(),singles=new Map();
+  const push=(m,k,g,v)=>{if(!m.has(k))m.set(k,new Map());const gm=m.get(k);if(!gm.has(g))gm.set(g,[]);gm.get(g).push(v)};
+  for(const b of pm.books||[]){
+    const g=BOOK_GROUPS[b.key]||b.key;
+    const byKey=new Map(b.outcomes.map(o=>[selKey(o),o]));
+    for(const o of b.outcomes){
+      const opp=byKey.get(selKey({...o,side:OPPOSITE[o.side]}));
+      if(opp)push(pairs,selKey(o),g,(1/o.price)/(1/o.price+1/opp.price));
+      else push(singles,selKey(o),g,1/o.price);
+    }
+  }
+  const avg=gm=>{const per=[...gm.values()].map(l=>l.reduce((a,v)=>a+v,0)/l.length);return per.reduce((a,v)=>a+v,0)/per.length};
+  const out=new Map();
+  for(const [k,gm] of singles)out.set(k,{p:avg(gm),rough:true});
+  for(const [k,gm] of pairs)out.set(k,{p:avg(gm),rough:false});
+  return out;
+}
+function selLabel(o,market){
+  const unit=MARKET_UNITS[market]||"";
+  if(o.side==="Yes"||o.side==="No")return `${o.player}${o.side==="No"?" (no)":""}`;
+  return `${o.player} ${o.side} ${o.point??""}${unit?" "+unit:""}`.trim();
+}
+// Every selection in one match's player market, with prices, best price and fair chance.
+function propSelections(pm){
+  const fair=fairProps(pm),sels=new Map();
+  for(const b of pm.books)for(const o of b.outcomes){
+    const k=selKey(o);
+    if(!sels.has(k))sels.set(k,{key:k,player:o.player,side:o.side,point:o.point,prices:{}});
+    sels.get(k).prices[b.key]=o.price;
+  }
+  const order={Over:0,Yes:0,Under:1,No:1};
+  return [...sels.values()].map(s=>{
+    const best=Math.max(...Object.values(s.prices));
+    const f=fair.get(s.key)||{};
+    return {...s,label:selLabel(s,pm.market),best,bestKey:Object.keys(s.prices).find(k=>s.prices[k]===best),fair:f.p,rough:!!f.rough};
+  }).sort((a,b)=>a.player.localeCompare(b.player)||(a.point??0)-(b.point??0)||order[a.side]-order[b.side]);
+}
+function propMeta(pm,s,price,bookKey){
+  return {sport:pm.sport,eventId:pm.id,market:pm.market,player:s.player,side:s.side,point:s.point??null,team:s.label,start:pm.start,price,bookKey,
+    p:!s.rough&&Number.isFinite(s.fair)?Math.round(s.fair*10000)/10000:null,match:`${pm.home} v ${pm.away}`};
+}
+
+async function loadPlayerView(){
+  const status=$("l-status");
+  status.textContent=`Loading ${sportName(liveSport)} matches…`;
+  try{
+    if(!eventsList||eventsList.sport!==liveSport||Date.now()-eventsList.at>10*60000){
+      const d=await api(`/events?sport=${liveSport}`);
+      eventsList={sport:liveSport,events:d.events||[],offSeason:d.offSeason,at:Date.now()};
+    }
+    renderPlayerView();
+  }catch(e){status.textContent="Couldn't load matches: "+e.message}
+}
+
+function renderPlayerView(){
+  if(liveMarket==="h2h"||!eventsList||eventsList.sport!==liveSport)return;
+  const now=Date.now();
+  const evs=eventsList.events.filter(e=>Date.parse(e.start)>now).sort((a,b)=>String(a.start).localeCompare(String(b.start)));
+  const loaded=evs.filter(e=>propsData.has(e.id+"|"+liveMarket)).length;
+  $("l-status").textContent=`${marketName(liveMarket)} · ${evs.length} upcoming match${evs.length===1?"":"es"} · ${loaded} loaded · each match costs 1 API credit to load${lastQuota!=null?` · ${lastQuota} requests left`:""}`;
+  $("l-list").innerHTML=evs.length?evs.map(playerMatchHTML).join(""):
+    `<p class="note">${eventsList.offSeason?`${esc(sportName(liveSport))} is out of season, so there are no markets yet.`:`No upcoming ${esc(sportName(liveSport))} matches listed right now.`}</p>`;
+}
+
+function playerMatchHTML(ev){
+  const pm=propsData.get(ev.id+"|"+liveMarket);
+  const when=new Date(ev.start).toLocaleString("en-AU",{weekday:"short",day:"numeric",month:"short",hour:"numeric",minute:"2-digit"});
+  const head=`<div class="match-head"><h3>${esc(ev.home)} v ${esc(ev.away)}</h3><time datetime="${esc(ev.start)}">${esc(when)}</time></div>`;
+  if(!pm)return `<article class="match">${head}<div class="match-foot"><button class="btn solid" type="button" data-act="loadprops" data-ev="${esc(ev.id)}">Load ${esc(marketName(liveMarket).toLowerCase())} (1 credit)</button></div></article>`;
+  if(!pm.books.length)return `<article class="match">${head}<div class="match-foot"><span class="lineinfo">No Australian bookmaker has priced this market for this match yet. Empty results don't use credits, so it's free to check again later.</span><button class="btn" type="button" data-act="loadprops" data-ev="${esc(ev.id)}" data-force="1">Check again</button></div></article>`;
+  const books=[...pm.books].sort((a,b)=>(b.key===SB)-(a.key===SB)||a.title.localeCompare(b.title));
+  const sels=propSelections(pm);
+  const anyRough=sels.some(s=>s.rough);
+  const rows=sels.map((s,j)=>`<tr><td>${esc(s.label)}</td>${books.map(b=>{const p=s.prices[b.key];return `<td class="${p&&p===s.best?"best":""}${b.key===SB?" sbcol":""}">${p?odds(p):"–"}</td>`}).join("")}<td>${s.rough?"~"+pct(s.fair):pct(s.fair)}</td><td><button class="btn solid" type="button" data-act="propleg" data-ev="${esc(ev.id)}" data-j="${j}" aria-label="Add ${esc(s.label)} to multi">+</button></td></tr>`).join("");
+  return `<article class="match">${head}
+    <div class="tablewrap"><table>
+      <thead><tr><th>Selection</th>${books.map(b=>`<th class="${b.key===SB?"sbcol":""}">${esc(b.title)}</th>`).join("")}<th>Est. chance</th><th><span class="sr">Add</span></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <div class="match-foot"><span class="lineinfo">${anyRough?"~ means only one side is priced, so the margin can't be removed and the chance reads a few points high. ":""}+ adds the selection to your multi at ${esc(homeName())}'s price, or the best price if ${esc(homeName())} doesn't offer it.</span></div>
+  </article>`;
+}
+
+async function loadProps(evId,btn){
+  btn.disabled=true;btn.textContent="Loading…";
+  try{
+    const d=await api(`/props?sport=${liveSport}&event=${encodeURIComponent(evId)}&market=${liveMarket}`);
+    const ev=(eventsList&&eventsList.events.find(e=>e.id===evId))||{};
+    d.sport=liveSport;d.id=d.id||evId;d.home=d.home||ev.home;d.away=d.away||ev.away;d.start=d.start||ev.start;d.books=d.books||[];
+    propsData.set(evId+"|"+liveMarket,d);
+    fillBookPicker();renderPlayerView();renderBuilder();
+  }catch(e){
+    btn.disabled=false;btn.textContent="Try again";
+    $("l-status").textContent="Couldn't load that market: "+e.message;
+  }
+}
+
+// One leg per match, so the combined price and est. chance stay accurate.
+function addLeg(leg){
+  const rows=multiIsExample?[]:multi.read();
+  if(leg.meta&&rows.some(r=>r.meta&&r.meta.eventId===leg.meta.eventId)){toast("Your multi already has a leg from this match. Legs here are one per match.");return}
+  if(multiIsExample){multi.set([leg]);multiIsExample=false}else multi.add(leg);
+  toast(`Added ${leg.meta?leg.meta.team:leg.name} @ ${leg.odds}. Multi now has ${multi.count()} leg${multi.count()===1?"":"s"}.`);
+}
 $("l-refresh").addEventListener("click",loadLive);
 try{$("l-lines").checked=localStorage.getItem("pt-lines")==="1"}catch(e){}
 $("l-lines").addEventListener("change",()=>{try{localStorage.setItem("pt-lines",$("l-lines").checked?"1":"0")}catch(e){}loadLive()});
@@ -570,6 +711,7 @@ async function loadLive(){
     return;
   }
   if(!token){showLogins();status.textContent="Enter your passcode to load odds.";return}
+  if(liveMarket!=="h2h")return loadPlayerView();
   status.textContent="Loading "+sportName(liveSport)+" odds…";
   try{
     const q="sport="+liveSport+($("l-lines").checked?"&lines=1":"");
@@ -623,7 +765,8 @@ function matchHTML(ev,i){
 
 function fillBookPicker(){
   const seen=new Map();
-  liveData.events.forEach(ev=>ev.books.forEach(b=>{seen.set(b.key,b.title);bookTitles[b.key]=b.title}));
+  if(liveData)liveData.events.forEach(ev=>ev.books.forEach(b=>{seen.set(b.key,b.title);bookTitles[b.key]=b.title}));
+  for(const pm of propsData.values())pm.books.forEach(b=>{seen.set(b.key,b.title);bookTitles[b.key]=b.title});
   const opts=[...seen].sort((a,b)=>a[1].localeCompare(b[1]));
   if(!seen.has(SB))opts.unshift([SB,homeName()+" (no prices)"]);
   $("l-book").innerHTML=opts.map(([k,t])=>`<option value="${esc(k)}"${k===SB?" selected":""}>${esc(t)}</option>`).join("");
@@ -632,7 +775,8 @@ function fillBookPicker(){
 $("l-book").addEventListener("change",e=>{
   SB=e.target.value;
   try{localStorage.setItem("pt-book",SB)}catch(err){}
-  if(liveData)renderLive();
+  if(liveMarket!=="h2h"){renderPlayerView();renderBuilder()}
+  else if(liveData)renderLive();
 });
 
 function renderLive(){
@@ -649,7 +793,18 @@ function renderLive(){
 }
 
 $("l-list").addEventListener("click",e=>{
-  const btn=e.target.closest("button[data-act]");if(!btn||!liveData)return;
+  const btn=e.target.closest("button[data-act]");if(!btn)return;
+  if(btn.dataset.act==="loadprops"){loadProps(btn.dataset.ev,btn);return}
+  if(btn.dataset.act==="propleg"){
+    const pm=propsData.get(btn.dataset.ev+"|"+liveMarket);if(!pm)return;
+    const s=propSelections(pm)[+btn.dataset.j];if(!s)return;
+    const own=s.prices[SB];
+    const price=own||s.best,bookKey=own?SB:s.bestKey;
+    const title=(pm.books.find(b=>b.key===bookKey)||{}).title||"";
+    addLeg({name:`${s.label} (${own?title:"best price, "+title})`,odds:odds(price),prob:!s.rough&&Number.isFinite(s.fair)?(s.fair*100).toFixed(1):"",meta:propMeta(pm,s,price,bookKey)});
+    return;
+  }
+  if(!liveData)return;
   const ev=liveData.events[+btn.dataset.i];if(!ev)return;
   const {names,best,sb}=pricesFor(ev);
   if(btn.dataset.act==="margin"){
@@ -662,9 +817,7 @@ $("l-list").addEventListener("click",e=>{
     const price=useSb?sb.h2h[n]:best[j];
     const bookKey=useSb?sb.key:(ev.books.find(b=>b.h2h[n]===price)||{}).key;
     const p=consensus(ev,names)[j];
-    const leg={name:`${n} H2H`+(useSb?` (${sb.title})`:" (best price)"),odds:odds(price),prob:Number.isFinite(p)?(p*100).toFixed(1):"",meta:legMeta(ev,n,price,bookKey,p)};
-    if(multiIsExample){multi.set([leg]);multiIsExample=false}else multi.add(leg);
-    toast(`Added ${n} @ ${odds(price)}. Multi now has ${multi.count()} leg${multi.count()===1?"":"s"}.`);
+    addLeg({name:`${n} H2H`+(useSb?` (${sb.title})`:" (best price)"),odds:odds(price),prob:Number.isFinite(p)?(p*100).toFixed(1):"",meta:legMeta(ev,n,price,bookKey,p)});
   }
 });
 
@@ -686,10 +839,10 @@ function consensus(ev,names){
   return names.map((_,j)=>per.length?per.reduce((a,v)=>a+v[j],0)/per.length:NaN);
 }
 
-function buildMultis(events,{target,tol,minLegs,maxLegs,source,now}){
-  const lo=target*(1-tol),hi=target*(1+tol);
+// Candidate legs from head-to-head odds. ei is the match id, used to keep one leg per match.
+function h2hCandidates(events,source,now){
   const cands=[];
-  events.forEach((ev,ei)=>{
+  events.forEach(ev=>{
     if(Date.parse(ev.start)<=now)return;
     const {names,best,sb}=pricesFor(ev);
     const fair=consensus(ev,names);
@@ -697,11 +850,31 @@ function buildMultis(events,{target,tol,minLegs,maxLegs,source,now}){
       let price,book,bookKey;
       if(source==="sb"){if(!sb||!(sb.h2h[n]>1))return;price=sb.h2h[n];book=sb.title;bookKey=sb.key}
       else{price=best[j];if(!(price>1))return;const bk=ev.books.find(b=>b.h2h[n]===price)||{};book=bk.title||"";bookKey=bk.key}
-      if(price>hi)return;
-      cands.push({ei,ev,team:n,match:`${ev.home} v ${ev.away}`,start:ev.start,price,book,bookKey,p:fair[j]});
+      cands.push({ei:ev.id,team:n,label:`${n} H2H`,match:`${ev.home} v ${ev.away}`,start:ev.start,price,book,bookKey,p:fair[j],rough:false,meta:legMeta(ev,n,price,bookKey,fair[j])});
     });
   });
-  cands.sort((a,b)=>a.price-b.price);
+  return cands;
+}
+// Candidate legs from every player market loaded so far.
+function propCandidates(source,now){
+  const cands=[];
+  for(const pm of propsData.values()){
+    if(!pm.books.length||Date.parse(pm.start)<=now)continue;
+    for(const s of propSelections(pm)){
+      let price,bookKey;
+      if(source==="sb"){if(!(s.prices[SB]>1))continue;price=s.prices[SB];bookKey=SB}
+      else{price=s.best;bookKey=s.bestKey}
+      const book=(pm.books.find(b=>b.key===bookKey)||{}).title||"";
+      cands.push({ei:pm.id,team:s.label,label:s.label,match:`${pm.home} v ${pm.away}`,start:pm.start,price,book,bookKey,
+        p:s.rough?NaN:s.fair,rough:s.rough,implied:s.fair,meta:propMeta(pm,s,price,bookKey)});
+    }
+  }
+  return cands;
+}
+
+function buildMultis(cands,{target,tol,minLegs,maxLegs}){
+  const lo=target*(1-tol),hi=target*(1+tol);
+  cands=cands.filter(c=>c.price>1&&c.price<=hi).sort((a,b)=>a.price-b.price);
   const out=[],used=new Set(),legs=[];
   (function dfs(from,o){
     if(legs.length>=minLegs&&o>=lo&&o<=hi)out.push({legs:[...legs],odds:o});
@@ -727,28 +900,36 @@ function renderBuilder(){
   const status=$("b-status"),list=$("b-list");
   const target=num($("b-target").value),stake=num($("b-stake").value)||0;
   $("b-ret").textContent=target>1?money(target*stake):"–";
-  if(!liveData){
+  const pool=$("b-pool").value,source=$("b-src").value,now=Date.now();
+  const useH2h=pool!=="props"&&liveData,propCount=[...propsData.values()].filter(pm=>pm.books.length&&Date.parse(pm.start)>now).length,useProps=pool!=="h2h"&&propCount>0;
+  if(!useH2h&&!useProps){
     ["b-count","b-best"].forEach(i=>$(i).textContent="–");
-    status.textContent="Load odds in the Live odds tab first. The builder uses whichever competition is loaded there.";
+    status.textContent=pool==="props"
+      ?"Load a player market for at least one match in the Live odds tab first (choose it from the Market dropdown)."
+      :"Load odds in the Live odds tab first. The builder uses the head-to-head competition loaded there plus any player markets you've loaded.";
     list.innerHTML="";return;
   }
   if(!(target>1)){status.textContent="Target odds must be above 1.00.";list.innerHTML="";return}
   const [minLegs,maxLegs]=$("b-legs").value.split("-").map(Number);
-  builderResults=buildMultis(liveData.events,{target,tol:num($("b-tol").value),minLegs,maxLegs,source:$("b-src").value,now:Date.now()});
+  const cands=[...(useH2h?h2hCandidates(liveData.events,source,now):[]),...(useProps?propCandidates(source,now):[])];
+  builderResults=buildMultis(cands,{target,tol:num($("b-tol").value),minLegs,maxLegs});
   $("b-count").textContent=builderResults.length;
-  $("b-best").textContent=builderResults.length?pct(builderResults[0].p):"–";
+  $("b-best").textContent=builderResults.length&&Number.isFinite(builderResults[0].p)?pct(builderResults[0].p):"–";
   const shown=builderResults.slice(0,8);
+  const using=[useH2h?`${sportName(liveData.sport)} head-to-head`:"",useProps?`player markets from ${propCount} match${propCount===1?"":"es"}`:""].filter(Boolean).join(" and ");
   status.textContent=builderResults.length
-    ?`Using ${sportName(liveData.sport)} odds. Showing ${shown.length} of ${builderResults.length}, best estimated chance first.`
-    :`No ${sportName(liveData.sport)} combinations land within range of ${odds(target)}. Try a wider range, more legs, or best available prices.`;
+    ?`Using ${using}. Showing ${shown.length} of ${builderResults.length}, best estimated chance first.`
+    :`Nothing from ${using} lands within range of ${odds(target)}. Try a wider range, more legs, or best available prices.`;
   list.innerHTML=shown.map((m,i)=>`<article class="match">
     <div class="match-head">
       <h3>${m.legs.length===1?"Single":m.legs.length+"-leg multi"} @ ${odds(m.odds)}</h3>
-      <span class="stat">Est. chance ${pct(m.p)} · EV <span class="${m.ev>0?"pos":"neg"}">${Number.isFinite(m.ev)?(m.ev>0?"+":"")+money(m.ev*100):"–"}</span> per $100</span>
+      <span class="stat">${Number.isFinite(m.p)
+        ?`Est. chance ${pct(m.p)} · EV <span class="${m.ev>0?"pos":"neg"}">${(m.ev>0?"+":"")+money(m.ev*100)}</span> per $100`
+        :"Est. chance n/a: a leg's market only prices one side"}</span>
     </div>
     <div class="tablewrap"><table>
-      <thead><tr><th>Team</th><th>Match</th><th>Price</th><th>Book</th><th>Est. chance</th></tr></thead>
-      <tbody>${m.legs.map(l=>`<tr><td>${esc(l.team)}</td><td>${esc(l.match)}</td><td>${odds(l.price)}</td><td>${esc(l.book)}</td><td>${pct(l.p)}</td></tr>`).join("")}</tbody>
+      <thead><tr><th>Selection</th><th>Match</th><th>Price</th><th>Book</th><th>Est. chance</th></tr></thead>
+      <tbody>${m.legs.map(l=>`<tr><td>${esc(l.label)}</td><td>${esc(l.match)}</td><td>${odds(l.price)}</td><td>${esc(l.book)}</td><td>${l.rough?"~"+pct(l.implied):pct(l.p)}</td></tr>`).join("")}</tbody>
     </table></div>
     <div class="match-foot">
       <span class="lineinfo">$${stake.toLocaleString("en-AU")} returns ${money(m.odds*stake)} if every leg wins.</span>
@@ -757,19 +938,19 @@ function renderBuilder(){
     </div>
   </article>`).join("");
 }
-["b-target","b-tol","b-legs","b-src","b-stake"].forEach(id=>$(id).addEventListener("input",renderBuilder));
-const builderLegMeta=l=>legMeta(l.ev,l.team,l.price,l.bookKey,l.p);
+["b-target","b-tol","b-legs","b-src","b-pool","b-stake"].forEach(id=>$(id).addEventListener("input",renderBuilder));
+const builderLegMeta=l=>l.meta;
 $("b-list").addEventListener("click",e=>{
   const load=e.target.closest("button[data-build]"),log=e.target.closest("button[data-logbuild]");
   const m=builderResults[+((load||log||{}).dataset||{})[load?"build":"logbuild"]];if(!m)return;
   if(load){
-    multi.set(m.legs.map(l=>({name:`${l.team} H2H (${l.book})`,odds:odds(l.price),prob:Number.isFinite(l.p)?(l.p*100).toFixed(1):"",meta:builderLegMeta(l)})));
+    multi.set(m.legs.map(l=>({name:`${l.label} (${l.book})`,odds:odds(l.price),prob:Number.isFinite(l.p)?(l.p*100).toFixed(1):"",meta:builderLegMeta(l)})));
     multiIsExample=false;
     $("m-stake").value=$("b-stake").value;calcMulti();
     show("multi");
   }else{
     const books=[...new Set(m.legs.map(l=>l.book).filter(Boolean))];
-    prefillBet({desc:m.legs.map(l=>`${l.team} H2H`).join(" + "),odds:m.odds,stake:num($("b-stake").value),p:m.p,book:books.length===1?books[0]:"",legs:m.legs.map(builderLegMeta)});
+    prefillBet({desc:m.legs.map(l=>l.label).join(" + "),odds:m.odds,stake:num($("b-stake").value),p:m.p,book:books.length===1?books[0]:"",legs:m.legs.map(builderLegMeta)});
   }
 });
 
@@ -823,10 +1004,12 @@ function newerOf(a,b){
   return String(b.updatedAt||"")>String(a.updatedAt||"")?b:a;
 }
 
+// Closing prices are stored per leg under this key (same as the Worker). Head-to-head legs use the plain match id.
+const legKey=l=>l.market?[l.eventId,l.market,l.player,l.side,l.point??""].join("|"):l.eventId;
 // Closing odds for a bet once every leg has a recorded closing price.
 function closeOf(b){
   if(!Array.isArray(b.legs)||!b.legs.length||!b.close||!b.close.legs)return null;
-  const cs=b.legs.map(l=>b.close.legs[l.eventId]);
+  const cs=b.legs.map(l=>b.close.legs[legKey(l)]);
   if(cs.some(c=>!c||!(c.price>1)))return null;
   const odds=cs.reduce((a,c)=>a*c.price,1);
   const fair=cs.every(c=>Number.isFinite(c.fair))?cs.reduce((a,c)=>a*c.fair,1):NaN;
@@ -1110,7 +1293,11 @@ $("t-betform").addEventListener("submit",e=>{
   const bet={id:newId(),createdAt:t,updatedAt:t,date,desc,book:$("t-book").value.trim(),odds:o,stake,result:"pending"};
   if(chId)bet.challengeId=chId;
   if(Number.isFinite(p))bet.p=Math.round(p*10000)/10000;
-  if(pendingLegs)bet.legs=pendingLegs.map(l=>({sport:l.sport,eventId:l.eventId,team:l.team,start:l.start,price:l.price,bookKey:l.bookKey,p:l.p,match:l.match}));
+  if(pendingLegs)bet.legs=pendingLegs.map(l=>{
+    const leg={sport:l.sport,eventId:l.eventId,team:l.team,start:l.start,price:l.price,bookKey:l.bookKey,p:l.p,match:l.match};
+    if(l.market)Object.assign(leg,{market:l.market,player:l.player,side:l.side,point:l.point??null});
+    return leg;
+  });
   change(()=>T.bets.push(bet));
   $("t-desc").value="";$("t-odds").value="";$("t-p").value="";$("t-chsel").value="";
   pendingLegs=null;$("t-linked").hidden=true;resetLimitArm();
@@ -1153,6 +1340,7 @@ $("m-log").addEventListener("click",()=>{
 });
 
 $("t-date").value=todayStr();
+fillMarketPicker();
 renderTracker();
 window.trackerReady=true;
 sync();
