@@ -92,6 +92,8 @@ details[open] > summary{margin-bottom:12px}
 .del{border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:4px;padding:3px 8px;cursor:pointer;font-size:.8rem;white-space:nowrap}
 .del.armed{border-color:var(--bad);color:var(--bad)}
 label.inline{display:flex;align-items:center;gap:8px}
+label.inline input[type="checkbox"]{width:auto;padding:0;accent-color:var(--turf)}
+.board b.warn{color:#ffb4a8}
 label.inline select{width:auto;padding:6px 8px;font-family:var(--f-body);font-size:.9rem;text-transform:none;letter-spacing:0}
 #l-status{font-size:.85rem;color:var(--muted);flex:1 1 220px}
 .matches{display:grid;gap:14px}
@@ -140,7 +142,7 @@ footer strong{color:var(--ink)}
 
   <!-- LIVE ODDS -->
   <section class="panel" data-panel="live">
-    <p class="lede">Head-to-head prices from Australian bookmakers. Your chosen bookmaker is highlighted and the best price for each team is in green. Send a market to the margin calculator or add a team to your multi.</p>
+    <p class="lede">Head-to-head prices from Australian bookmakers. Your chosen bookmaker is highlighted and the best price for each team is in green. Send a market to the margin calculator or add a team to your multi. Ticking Line odds uses an extra API credit per load.</p>
     <div class="live-bar">
       <div class="seg" role="group" aria-label="Competition">
         <button type="button" data-sport="afl" aria-pressed="true">AFL</button>
@@ -151,9 +153,15 @@ footer strong{color:var(--ink)}
         <button type="button" data-sport="mlb" aria-pressed="false">MLB</button>
       </div>
       <label class="inline" for="l-book">Your bookmaker <select id="l-book"></select></label>
+      <label class="inline" for="l-lines"><input id="l-lines" type="checkbox"> Line odds</label>
       <button class="btn" type="button" id="l-refresh">Refresh</button>
       <span id="l-status" aria-live="polite"></span>
     </div>
+    <form id="l-login" class="grid" hidden>
+      <p class="note span">Enter your passcode to load odds. It's the one you set with <code>wrangler secret put TRACKER_TOKEN</code>. Each device only asks once.</p>
+      <label>Passcode<input id="l-pass" type="password" autocomplete="current-password"></label>
+      <button class="btn solid" type="submit">Connect</button>
+    </form>
     <div class="matches" id="l-list"></div>
   </section>
 
@@ -213,6 +221,8 @@ footer strong{color:var(--ink)}
       <div><small>Return on stake</small><b id="t-roi">–</b></div>
       <div><small>Win rate</small><b id="t-wr">–</b></div>
       <div><small>Pending</small><b id="t-pend">–</b></div>
+      <div><small>This month</small><b id="t-month">–</b></div>
+      <div><small>Vs closing price</small><b id="t-clv">–</b></div>
     </div>
 
     <h2 class="sub">Challenges</h2>
@@ -234,8 +244,10 @@ footer strong{color:var(--ink)}
       <label>Odds<input id="t-odds" type="number" step="0.01" min="1.01"></label>
       <label>Stake $<input id="t-stake" type="number" step="0.01" min="0.01"></label>
       <label>Date<input id="t-date" type="date"></label>
+      <label>Est. chance %<input id="t-p" type="number" step="0.1" min="0" max="100" placeholder="optional"></label>
       <label>Challenge<select id="t-chsel"><option value="">None</option></select></label>
-      <button class="btn solid" type="submit">Log bet</button>
+      <button class="btn solid" type="submit" id="t-logbtn">Log bet</button>
+      <p id="t-linked" class="note span" hidden></p>
     </form>
     <datalist id="t-books"></datalist>
     <p id="t-formerr" class="note err" hidden></p>
@@ -245,7 +257,21 @@ footer strong{color:var(--ink)}
       <thead><tr><th>Date</th><th>Bet</th><th>Odds</th><th>Stake</th><th>Result</th><th>P/L</th><th><span class="sr">Delete</span></th></tr></thead>
       <tbody id="t-log"></tbody>
     </table></div>
-    <p class="note">Set each bet's result once it's settled. Void bets return the stake and don't count towards win rate. Data syncs through your Worker and can only be read with your passcode.</p>
+    <p class="note">Set each bet's result once it's settled. Void bets return the stake and don't count towards win rate. Bets logged from Live odds, the Multi builder or the Multi tab record their closing price automatically, about 10 to 20 minutes before the game starts.</p>
+
+    <h2 class="sub">Est. chance vs results</h2>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Est. chance</th><th>Settled bets</th><th>Expected wins</th><th>Actual wins</th></tr></thead>
+      <tbody id="t-calib"></tbody>
+    </table></div>
+    <p class="note" id="t-calibnote"></p>
+
+    <h2 class="sub">Monthly limit</h2>
+    <form id="t-limitform" class="grid">
+      <label>Limit per month $<input id="t-limit" type="number" step="10" min="0" placeholder="Off"></label>
+      <button class="btn" type="submit">Save limit</button>
+    </form>
+    <p class="note">Counts new money only: ordinary bets plus the first stake of each challenge. Rolled-over challenge winnings don't count, and void bets are refunded. Leave it blank to switch it off.</p>
   </section>
 
   <!-- VALUE & KELLY -->
@@ -419,6 +445,7 @@ function makeRows(container,data,cols,onChange){
       `<button class="x" type="button" aria-label="Remove">×</button>`;
     row.querySelector(".x").addEventListener("click",()=>{if(host.children.length>1){row.remove();onChange()}});
     row.querySelectorAll("input").forEach(i=>i.addEventListener("input",onChange));
+    row._meta=item.meta||null; // the live market a leg came from, used for closing prices
     host.appendChild(row);
   }
   data.forEach(add);
@@ -426,7 +453,7 @@ function makeRows(container,data,cols,onChange){
     add:item=>{add(item||{});onChange()},
     set:items=>{host.innerHTML="";items.forEach(add);onChange()},
     count:()=>host.children.length,
-    read:()=>[...host.children].map(r=>{const o={};r.querySelectorAll("input").forEach(i=>o[i.dataset.key]=i.value);return o})
+    read:()=>[...host.children].map(r=>{const o={meta:r._meta};r.querySelectorAll("input").forEach(i=>o[i.dataset.key]=i.value);return o})
   };
 }
 
@@ -524,6 +551,8 @@ sportBtns.forEach(b=>b.addEventListener("click",()=>{
   loadLive();
 }));
 $("l-refresh").addEventListener("click",loadLive);
+try{$("l-lines").checked=localStorage.getItem("pt-lines")==="1"}catch(e){}
+$("l-lines").addEventListener("change",()=>{try{localStorage.setItem("pt-lines",$("l-lines").checked?"1":"0")}catch(e){}loadLive()});
 
 async function loadLive(){
   const status=$("l-status"),list=$("l-list");
@@ -532,15 +561,23 @@ async function loadLive(){
     list.innerHTML='<p class="note">Live odds aren\'t connected yet. Set <code>DEFAULT_ODDS_ENDPOINT</code> near the top of the script to your Worker\'s <code>/odds</code> URL.</p>';
     return;
   }
+  if(!token){showLogins();status.textContent="Enter your passcode to load odds.";return}
   status.textContent="Loading "+sportName(liveSport)+" odds…";
   try{
-    const r=await fetch(ODDS_ENDPOINT+(ODDS_ENDPOINT.includes("?")?"&":"?")+"sport="+liveSport);
+    const q="sport="+liveSport+($("l-lines").checked?"&lines=1":"");
+    const r=await fetch(ODDS_ENDPOINT+(ODDS_ENDPOINT.includes("?")?"&":"?")+q,{headers:{"Authorization":"Bearer "+token}});
     const d=await r.json().catch(()=>({}));
+    if(r.status===401){clearToken();throw new Error("the passcode was wrong. Enter it again.")}
     if(!r.ok)throw new Error(d.error||"the odds service returned status "+r.status);
     liveData=d; renderLive();
   }catch(e){
     status.textContent="Couldn't load odds: "+e.message;
   }
+}
+
+// Everything the tracker needs to look up a leg's closing price later.
+function legMeta(ev,team,price,bookKey,p){
+  return {sport:liveData.sport,eventId:ev.id,team,start:ev.start,price,bookKey,p:Number.isFinite(p)?Math.round(p*10000)/10000:null,match:`${ev.home} v ${ev.away}`};
 }
 
 function pricesFor(ev){
@@ -613,24 +650,32 @@ $("l-list").addEventListener("click",e=>{
     show("margin");
   }else{
     const j=+btn.dataset.j,n=names[j];
-    const price=sb&&sb.h2h[n]?sb.h2h[n]:best[j];
-    const leg={name:`${n} H2H`+(sb&&sb.h2h[n]?` (${sb.title})`:" (best price)"),odds:odds(price)};
+    const useSb=!!(sb&&sb.h2h[n]);
+    const price=useSb?sb.h2h[n]:best[j];
+    const bookKey=useSb?sb.key:(ev.books.find(b=>b.h2h[n]===price)||{}).key;
+    const p=consensus(ev,names)[j];
+    const leg={name:`${n} H2H`+(useSb?` (${sb.title})`:" (best price)"),odds:odds(price),prob:Number.isFinite(p)?(p*100).toFixed(1):"",meta:legMeta(ev,n,price,bookKey,p)};
     if(multiIsExample){multi.set([leg]);multiIsExample=false}else multi.add(leg);
     toast(`Added ${n} @ ${odds(price)}. Multi now has ${multi.count()} leg${multi.count()===1?"":"s"}.`);
   }
 });
 
 /* Multi builder */
+// Bookmakers with a shared owner that usually post identical prices. They count once in the average.
+const BOOK_GROUPS={ladbrokes_au:"entain",neds:"entain"};
 // Average no-vig probability per outcome across every book that prices the full market.
 function consensus(ev,names){
-  const probs=names.map(()=>[]);
+  const groups=new Map();
   ev.books.forEach(b=>{
     const p=names.map(n=>b.h2h[n]);
     if(!p.every(x=>x>1))return;
     const s=p.reduce((a,x)=>a+1/x,0);
-    p.forEach((x,j)=>probs[j].push(1/x/s));
+    const g=BOOK_GROUPS[b.key]||b.key;
+    if(!groups.has(g))groups.set(g,[]);
+    groups.get(g).push(p.map(x=>1/x/s));
   });
-  return probs.map(a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:NaN);
+  const per=[...groups.values()].map(list=>names.map((_,j)=>list.reduce((a,v)=>a+v[j],0)/list.length));
+  return names.map((_,j)=>per.length?per.reduce((a,v)=>a+v[j],0)/per.length:NaN);
 }
 
 function buildMultis(events,{target,tol,minLegs,maxLegs,source,now}){
@@ -641,11 +686,11 @@ function buildMultis(events,{target,tol,minLegs,maxLegs,source,now}){
     const {names,best,sb}=pricesFor(ev);
     const fair=consensus(ev,names);
     names.forEach((n,j)=>{
-      let price,book;
-      if(source==="sb"){if(!sb||!(sb.h2h[n]>1))return;price=sb.h2h[n];book=sb.title}
-      else{price=best[j];if(!(price>1))return;book=(ev.books.find(b=>b.h2h[n]===price)||{}).title||""}
+      let price,book,bookKey;
+      if(source==="sb"){if(!sb||!(sb.h2h[n]>1))return;price=sb.h2h[n];book=sb.title;bookKey=sb.key}
+      else{price=best[j];if(!(price>1))return;const bk=ev.books.find(b=>b.h2h[n]===price)||{};book=bk.title||"";bookKey=bk.key}
       if(price>hi)return;
-      cands.push({ei,team:n,match:`${ev.home} v ${ev.away}`,start:ev.start,price,book,p:fair[j]});
+      cands.push({ei,ev,team:n,match:`${ev.home} v ${ev.away}`,start:ev.start,price,book,bookKey,p:fair[j]});
     });
   });
   cands.sort((a,b)=>a.price-b.price);
@@ -699,18 +744,25 @@ function renderBuilder(){
     </table></div>
     <div class="match-foot">
       <span class="lineinfo">$${stake.toLocaleString("en-AU")} returns ${money(m.odds*stake)} if every leg wins.</span>
-      <button class="btn solid" type="button" data-build="${i}">Load into Multi</button>
+      <button class="btn" type="button" data-build="${i}">Load into Multi</button>
+      <button class="btn solid" type="button" data-logbuild="${i}">Log this bet</button>
     </div>
   </article>`).join("");
 }
 ["b-target","b-tol","b-legs","b-src","b-stake"].forEach(id=>$(id).addEventListener("input",renderBuilder));
+const builderLegMeta=l=>legMeta(l.ev,l.team,l.price,l.bookKey,l.p);
 $("b-list").addEventListener("click",e=>{
-  const btn=e.target.closest("button[data-build]");if(!btn)return;
-  const m=builderResults[+btn.dataset.build];if(!m)return;
-  multi.set(m.legs.map(l=>({name:`${l.team} H2H (${l.book})`,odds:odds(l.price),prob:Number.isFinite(l.p)?(l.p*100).toFixed(1):""})));
-  multiIsExample=false;
-  $("m-stake").value=$("b-stake").value;calcMulti();
-  show("multi");
+  const load=e.target.closest("button[data-build]"),log=e.target.closest("button[data-logbuild]");
+  const m=builderResults[+((load||log||{}).dataset||{})[load?"build":"logbuild"]];if(!m)return;
+  if(load){
+    multi.set(m.legs.map(l=>({name:`${l.team} H2H (${l.book})`,odds:odds(l.price),prob:Number.isFinite(l.p)?(l.p*100).toFixed(1):"",meta:builderLegMeta(l)})));
+    multiIsExample=false;
+    $("m-stake").value=$("b-stake").value;calcMulti();
+    show("multi");
+  }else{
+    const books=[...new Set(m.legs.map(l=>l.book).filter(Boolean))];
+    prefillBet({desc:m.legs.map(l=>`${l.team} H2H`).join(" + "),odds:m.odds,stake:num($("b-stake").value),p:m.p,book:books.length===1?books[0]:"",legs:m.legs.map(builderLegMeta)});
+  }
 });
 
 /* Tracker */
@@ -724,20 +776,71 @@ const newId=()=>(window.crypto&&crypto.randomUUID)?crypto.randomUUID():Date.now(
 const nowIso=()=>new Date().toISOString();
 const todayStr=()=>new Date().toLocaleDateString("en-CA");
 
-let T={challenges:[],bets:[]};
-try{const s=JSON.parse(store.get("pt-tracker")||"null");if(s&&Array.isArray(s.bets))T={challenges:Array.isArray(s.challenges)?s.challenges:[],bets:s.bets}}catch(e){}
+let T={challenges:[],bets:[],settings:{}};
+try{const s=JSON.parse(store.get("pt-tracker")||"null");if(s&&Array.isArray(s.bets))T={challenges:Array.isArray(s.challenges)?s.challenges:[],bets:s.bets,settings:s.settings&&typeof s.settings==="object"?s.settings:{}}}catch(e){}
 let dirty=store.get("pt-tracker-dirty")==="1";
 let token=store.get("pt-token")||"";
 let rev=0,syncTimer=null,syncing=false;
 
+// One passcode covers both odds and the tracker.
+function showLogins(){$("t-login").hidden=false;$("l-login").hidden=false}
+function clearToken(){token="";store.del("pt-token");showLogins()}
+function setToken(p){
+  token=p;store.set("pt-token",p);
+  $("t-login").hidden=true;$("l-login").hidden=true;
+  sync();loadLive();
+}
+
+// Same rules as the Worker: newest updatedAt wins, and closing prices from either copy are kept.
 function mergeById(a,b){
   const out=new Map();
   for(const it of [...(Array.isArray(a)?a:[]),...(Array.isArray(b)?b:[])]){
     if(!it||typeof it.id!=="string")continue;
     const cur=out.get(it.id);
-    if(!cur||String(it.updatedAt||"")>String(cur.updatedAt||""))out.set(it.id,it);
+    if(!cur){out.set(it.id,it);continue}
+    const newer=String(it.updatedAt||"")>String(cur.updatedAt||"");
+    out.set(it.id,withCloses(newer?it:cur,newer?cur:it));
   }
   return [...out.values()];
+}
+function withCloses(win,lose){
+  const l=lose.close&&lose.close.legs;if(!l)return win;
+  const w=(win.close&&win.close.legs)||{};
+  return {...win,close:{...(lose.close||{}),...(win.close||{}),legs:{...l,...w}}};
+}
+function newerOf(a,b){
+  const okA=a&&typeof a==="object",okB=b&&typeof b==="object";
+  if(!okB)return okA?a:{};
+  if(!okA)return b;
+  return String(b.updatedAt||"")>String(a.updatedAt||"")?b:a;
+}
+
+// Closing odds for a bet once every leg has a recorded closing price.
+function closeOf(b){
+  if(!Array.isArray(b.legs)||!b.legs.length||!b.close||!b.close.legs)return null;
+  const cs=b.legs.map(l=>b.close.legs[l.eventId]);
+  if(cs.some(c=>!c||!(c.price>1)))return null;
+  const odds=cs.reduce((a,c)=>a*c.price,1);
+  const fair=cs.every(c=>Number.isFinite(c.fair))?cs.reduce((a,c)=>a*c.fair,1):NaN;
+  return {odds,fair,clv:b.odds/odds-1};
+}
+
+// Fill the Log a bet form from another tab. legs links the bet to live markets so its closing price is recorded.
+let pendingLegs=null;
+function prefillBet({desc,odds:o,stake,p,book,legs}){
+  $("t-desc").value=desc||"";
+  $("t-odds").value=o>1?o.toFixed(2):"";
+  $("t-stake").value=stake>0?stake.toFixed(2):"";
+  $("t-p").value=Number.isFinite(p)?(p*100).toFixed(1):"";
+  $("t-book").value=book||"";
+  $("t-chsel").value="";
+  pendingLegs=Array.isArray(legs)&&legs.length?legs:null;
+  const note=$("t-linked");
+  note.hidden=!pendingLegs;
+  if(pendingLegs)note.textContent=`Linked to ${pendingLegs.length} live market${pendingLegs.length===1?"":"s"}. The closing price will be recorded before ${pendingLegs.length===1?"the game starts":"each game starts"}.`;
+  resetLimitArm();
+  show("tracker");
+  $("t-loghead").scrollIntoView({behavior:"smooth",block:"start"});
 }
 const liveBets=()=>T.bets.filter(b=>!b.deleted);
 const liveChallenges=()=>T.challenges.filter(c=>!c.deleted);
@@ -751,7 +854,7 @@ const setSync=msg=>$("t-sync").textContent=msg;
 async function sync(){
   clearTimeout(syncTimer);
   if(!TRACKER_ENDPOINT){setSync("Saved on this device. Set the Worker address to sync between devices.");return}
-  if(!token){$("t-login").hidden=false;setSync(dirty?"Saved on this device. Enter your passcode to sync.":"Enter your passcode to sync between devices.");return}
+  if(!token){showLogins();setSync(dirty?"Saved on this device. Enter your passcode to sync.":"Enter your passcode to sync between devices.");return}
   if(syncing){syncTimer=setTimeout(sync,800);return}
   syncing=true;setSync("Syncing…");
   const sentRev=rev,sending=dirty;
@@ -762,9 +865,9 @@ async function sync(){
       body:sending?JSON.stringify(T):undefined
     });
     const d=await r.json().catch(()=>({}));
-    if(r.status===401){token="";store.del("pt-token");$("t-login").hidden=false;throw new Error("the passcode was wrong. Enter it again.")}
+    if(r.status===401){clearToken();throw new Error("the passcode was wrong. Enter it again.")}
     if(!r.ok)throw new Error(d.error||"the Worker returned status "+r.status);
-    T={challenges:mergeById(T.challenges,d.challenges),bets:mergeById(T.bets,d.bets)};
+    T={challenges:mergeById(T.challenges,d.challenges),bets:mergeById(T.bets,d.bets),settings:newerOf(T.settings,d.settings)};
     if(rev===sentRev)dirty=false;else syncTimer=setTimeout(sync,800);
     saveLocal();renderTracker();
     setSync("Synced at "+new Date().toLocaleTimeString("en-AU",{hour:"numeric",minute:"2-digit"}));
@@ -799,19 +902,27 @@ function challengeHTML(ch){
   const label={active:"In progress",complete:"Target reached",busted:"Busted",stopped:"Stopped"}[L.state];
   let foot="";
   if(L.state==="active"&&L.pending)foot=`<span class="lineinfo">Step ${L.rows.length} is running. Set its result in the bet log below.</span>`;
-  else if(L.state==="active")foot=`<span class="lineinfo">Bank ${money(L.bank)}. About ${togo} more win${togo===1?"":"s"} at 2.00 to reach ${money(ch.target)}. At a 48% chance each, that's roughly ${pct(Math.pow(0.48,togo))} from here.</span>
+  else if(L.state==="active"){
+    // Chance per step at 2.00, based on how this challenge's earlier steps were priced (chance × odds).
+    // With no estimates yet, assume a typical 5% bookmaker margin: 0.95 ÷ 2.00 = 47.5% per step.
+    const rated=L.rows.map(r=>r.b).filter(b=>Number.isFinite(b.p)&&b.odds>1);
+    const factor=rated.length?rated.reduce((a,b)=>a+b.p*b.odds,0)/rated.length:0.95;
+    const per=Math.min(0.99,factor/2);
+    const basis=rated.length?`priced like your earlier step${rated.length===1?"":"s"} (about ${pct(per,0)} each)`:`with a typical bookmaker margin (about ${pct(per,1)} each)`;
+    foot=`<span class="lineinfo">Bank ${money(L.bank)}. About ${togo} more win${togo===1?"":"s"} at 2.00 to reach ${money(ch.target)}. If those steps are ${basis}, the chance of getting there is roughly ${pct(Math.pow(per,togo))}.</span>
     <button class="btn solid" type="button" data-ch-act="step" data-id="${esc(ch.id)}">Add next step (${money(L.bank)})</button>
     <button class="btn" type="button" data-ch-act="stop" data-id="${esc(ch.id)}">Stop here</button>`;
+  }
   else if(L.state==="complete")foot=`<span class="lineinfo">Reached ${money(L.bank)} in ${L.rows.length} step${L.rows.length===1?"":"s"}.</span>`;
   else if(L.state==="busted")foot=`<span class="lineinfo">Lost at step ${L.rows.length}. Total lost: ${money(ch.start)}.</span>`;
   else foot=`<span class="lineinfo">Stopped with ${money(L.bank)} from a ${money(ch.start)} start.</span>`;
   foot+=`<button class="del" type="button" data-ch-act="delete" data-id="${esc(ch.id)}">Delete challenge</button>`;
-  const rows=L.rows.map(r=>`<tr><td>${r.n}</td><td>${esc(r.b.desc)}</td><td>${odds(r.b.odds)}</td><td>${money(r.b.stake)}</td><td>${esc(resultName(r.b.result))}</td><td class="${r.b.result==="won"?"pos":r.b.result==="lost"?"neg":""}">${r.after==null?"–":money(r.after)}</td></tr>`).join("");
+  const rows=L.rows.map(r=>`<tr><td>${r.n}</td><td>${esc(r.b.desc)}</td><td>${odds(r.b.odds)}</td><td>${Number.isFinite(r.b.p)?pct(r.b.p):"–"}</td><td>${money(r.b.stake)}</td><td>${esc(resultName(r.b.result))}</td><td class="${r.b.result==="won"?"pos":r.b.result==="lost"?"neg":""}">${r.after==null?"–":money(r.after)}</td></tr>`).join("");
   return `<article class="match ladder">
     <div class="match-head"><h3>${esc(ch.name||"Challenge")}</h3><span class="pill ${L.state}">${label}</span></div>
     <div class="ladder-meta"><span>${money(ch.start)}</span><span>Bank ${money(L.bank)}</span><span>${money(ch.target)}</span></div>
     <div class="ladder-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(prog*100)}"><span style="width:${(prog*100).toFixed(1)}%"></span></div>
-    ${rows?`<div class="tablewrap"><table><thead><tr><th>Step</th><th>Bet</th><th>Odds</th><th>Stake</th><th>Result</th><th>Bank after</th></tr></thead><tbody>${rows}</tbody></table></div>`:`<p class="note" style="padding:10px 12px 0">No steps yet. Add the first one with ${money(ch.start)}.</p>`}
+    ${rows?`<div class="tablewrap"><table><thead><tr><th>Step</th><th>Bet</th><th>Odds</th><th>Est. chance</th><th>Stake</th><th>Result</th><th>Bank after</th></tr></thead><tbody>${rows}</tbody></table></div>`:`<p class="note" style="padding:10px 12px 0">No steps yet. Add the first one with ${money(ch.start)}.</p>`}
     <div class="match-foot">${foot}</div>
   </article>`;
 }
@@ -833,6 +944,37 @@ function renderTracker(){
   $("t-wr").textContent=settled.length?`${pct(won/settled.length,0)} (${won}/${settled.length})`:"–";
   $("t-pend").textContent=pend.length?`${pend.length} · ${money(pend.reduce((a,b)=>a+b.stake,0))}`:"0";
 
+  // Monthly limit (new money only)
+  const lim=num(T.settings.monthlyLimit),spent=monthSpend();
+  $("t-month").textContent=lim>0?`${money(spent)} of ${money(lim)}`:money(spent);
+  $("t-month").classList.toggle("warn",lim>0&&spent>lim);
+  if(document.activeElement!==$("t-limit"))$("t-limit").value=lim>0?lim:"";
+
+  // Closing price: how the odds you took compare with the price just before the game
+  const closed=bets.map(b=>({b,c:closeOf(b)})).filter(x=>x.c);
+  if(closed.length){
+    const avg=closed.reduce((a,x)=>a+x.c.clv,0)/closed.length;
+    const beat=closed.filter(x=>x.c.clv>0).length;
+    $("t-clv").textContent=`${avg>0?"+":""}${pct(avg)} · beat ${beat}/${closed.length}`;
+    sign($("t-clv"),avg);
+  }else{$("t-clv").textContent="–";sign($("t-clv"),NaN)}
+
+  // Est. chance vs results
+  const rated=settled.filter(b=>Number.isFinite(b.p));
+  const buckets=[[0,.3,"Under 30%"],[.3,.45,"30–45%"],[.45,.55,"45–55%"],[.55,.7,"55–70%"],[.7,1.01,"70% and over"]];
+  const rowsC=buckets.map(([lo,hi,label])=>{
+    const g=rated.filter(b=>b.p>=lo&&b.p<hi);
+    if(!g.length)return "";
+    const exp=g.reduce((a,b)=>a+b.p,0),act=g.filter(b=>b.result==="won").length;
+    return `<tr><td>${label}</td><td>${g.length}</td><td>${exp.toFixed(1)}</td><td class="${act>exp?"pos":act<exp?"neg":""}">${act}</td></tr>`;
+  }).join("");
+  const expAll=rated.reduce((a,b)=>a+b.p,0),actAll=rated.filter(b=>b.result==="won").length;
+  $("t-calib").innerHTML=rated.length?rowsC+`<tr class="bestrow"><td>All</td><td>${rated.length}</td><td>${expAll.toFixed(1)}</td><td>${actAll}</td></tr>`
+    :'<tr><td colspan="4">No settled bets with an est. chance yet.</td></tr>';
+  $("t-calibnote").textContent=rated.length<50
+    ?`${rated.length} of about 50 settled bets needed before this says much. Until then, the gap between expected and actual wins is mostly luck.`
+    :`If actual wins keep landing below expected, the estimates are too generous for the bets you pick. Above expected over many bets suggests you're finding real value.`;
+
   // Challenges, newest first, active ones on top
   const order={active:0,stopped:1,complete:1,busted:1};
   const sorted=[...chs].sort((a,b)=>(order[ladder(a).state]-order[ladder(b).state])||String(b.createdAt).localeCompare(String(a.createdAt)));
@@ -852,11 +994,14 @@ function renderTracker(){
   const log=[...bets].sort((a,b)=>String(b.date).localeCompare(String(a.date))||String(b.createdAt).localeCompare(String(a.createdAt)));
   $("t-log").innerHTML=log.length?log.map(b=>{
     const p=betPL(b),ch=b.challengeId?findCh(b.challengeId):null;
-    const sub=[b.book,ch&&!ch.deleted?ch.name:""].filter(Boolean).map(esc).join(" · ");
+    const sub=[b.book,ch&&!ch.deleted?ch.name:"",Number.isFinite(b.p)?"est. "+pct(b.p):""].filter(Boolean).map(esc).join(" · ");
+    const c=closeOf(b);
+    const closeTxt=c?`<small>close ${odds(c.odds)} · <span class="${c.clv>0?"pos":c.clv<0?"neg":""}">${c.clv>0?"+":""}${pct(c.clv)}</span></small>`
+      :(Array.isArray(b.legs)&&b.result==="pending"?"<small>close pending</small>":"");
     return `<tr>
       <td>${esc(b.date||"")}</td>
       <td>${esc(b.desc)}${sub?`<small>${sub}</small>`:""}</td>
-      <td>${odds(b.odds)}</td>
+      <td>${odds(b.odds)}${closeTxt}</td>
       <td>${money(b.stake)}</td>
       <td><select data-res="${esc(b.id)}" aria-label="Result">${["pending","won","lost","void"].map(r=>`<option value="${r}"${b.result===r?" selected":""}>${resultName(r)}</option>`).join("")}</select></td>
       <td class="${p>0?"pos":p<0?"neg":""}">${Number.isFinite(p)?(p>0?"+":"")+money(p):"–"}</td>
@@ -911,28 +1056,77 @@ $("t-chform").addEventListener("submit",e=>{
   toast(`Started "${name}". Add the first step in Log a bet.`);
 });
 
+// New money this calendar month: ordinary bets, plus the first stake of each challenge. Void bets are refunded.
+const monthOf=d=>String(d||"").slice(0,7);
+function isFirstStep(b){
+  if(!b.challengeId)return false;
+  const first=liveBets().filter(x=>x.challengeId===b.challengeId).sort((x,y)=>String(x.createdAt).localeCompare(String(y.createdAt)))[0];
+  return !!first&&first.id===b.id;
+}
+function newMoney(b){return b.result==="void"?0:(!b.challengeId||isFirstStep(b))?b.stake:0}
+function monthSpend(month=monthOf(todayStr())){return liveBets().filter(b=>monthOf(b.date)===month).reduce((a,b)=>a+newMoney(b),0)}
+
+// Going over the limit needs a second press of Log bet.
+let limitArmed=false;
+function resetLimitArm(){limitArmed=false;$("t-logbtn").textContent="Log bet"}
+["t-desc","t-odds","t-stake","t-date","t-chsel"].forEach(id=>$(id).addEventListener("input",resetLimitArm));
+// Typing over a linked bet's description or odds means it's a different bet, so drop the market link.
+["t-desc","t-odds"].forEach(id=>$(id).addEventListener("input",()=>{if(pendingLegs){pendingLegs=null;$("t-linked").hidden=true}}));
+
 $("t-betform").addEventListener("submit",e=>{
   e.preventDefault();
   const err=$("t-formerr");
   const desc=$("t-desc").value.trim(),o=num($("t-odds").value),stake=num($("t-stake").value),chId=$("t-chsel").value;
-  const problem=!desc?"Describe the bet.":!(o>1)?"Odds need to be above 1.00.":!(stake>0)?"Enter a stake.":"";
+  const pIn=$("t-p").value.trim(),p=pIn===""?NaN:num(pIn)/100;
+  const problem=!desc?"Describe the bet.":!(o>1)?"Odds need to be above 1.00.":!(stake>0)?"Enter a stake.":(pIn!==""&&!(p>0&&p<1))?"Est. chance needs to be between 0 and 100.":"";
   if(problem){err.textContent=problem;err.hidden=false;return}
+  let fresh=stake;
   if(chId){
     const ch=findCh(chId),L=ch&&ladder(ch);
     if(!L||L.state!=="active"||L.pending){err.textContent="That challenge isn't ready for another step.";err.hidden=false;return}
     if(stake>L.bank+0.005){err.textContent=`The stake is more than the challenge bank (${money(L.bank)}).`;err.hidden=false;return}
+    if(L.rows.length)fresh=0; // later steps roll winnings, not new money
+  }
+  const date=$("t-date").value||todayStr();
+  const lim=num(T.settings.monthlyLimit);
+  if(lim>0&&fresh>0){
+    const after=monthSpend(monthOf(date))+fresh;
+    if(after>lim+0.005&&!limitArmed){
+      limitArmed=true;$("t-logbtn").textContent="Log anyway";
+      err.textContent=`This takes ${monthOf(date)===monthOf(todayStr())?"this month":"that month"} to ${money(after)}, over your ${money(lim)} limit. Press Log anyway if you still want to log it.`;
+      err.hidden=false;return;
+    }
   }
   err.hidden=true;
   const t=nowIso();
-  change(()=>T.bets.push({id:newId(),createdAt:t,updatedAt:t,date:$("t-date").value||todayStr(),desc,book:$("t-book").value.trim(),odds:o,stake,result:"pending",challengeId:chId||undefined}));
-  $("t-desc").value="";$("t-odds").value="";$("t-chsel").value="";
+  const bet={id:newId(),createdAt:t,updatedAt:t,date,desc,book:$("t-book").value.trim(),odds:o,stake,result:"pending"};
+  if(chId)bet.challengeId=chId;
+  if(Number.isFinite(p))bet.p=Math.round(p*10000)/10000;
+  if(pendingLegs)bet.legs=pendingLegs.map(l=>({sport:l.sport,eventId:l.eventId,team:l.team,start:l.start,price:l.price,bookKey:l.bookKey,p:l.p,match:l.match}));
+  change(()=>T.bets.push(bet));
+  $("t-desc").value="";$("t-odds").value="";$("t-p").value="";$("t-chsel").value="";
+  pendingLegs=null;$("t-linked").hidden=true;resetLimitArm();
   toast("Bet logged. Set the result once it's settled.");
+});
+
+$("t-limitform").addEventListener("submit",e=>{
+  e.preventDefault();
+  const v=$("t-limit").value.trim(),lim=v===""?0:num(v);
+  if(!(lim>=0)){toast("Enter a dollar amount, or leave it blank to switch the limit off.");return}
+  change(()=>{T.settings={...T.settings,monthlyLimit:lim>0?lim:null,updatedAt:nowIso()}});
+  $("t-limit").blur();
+  toast(lim>0?`Monthly limit set to ${money(lim)}.`:"Monthly limit switched off.");
 });
 
 $("t-login").addEventListener("submit",e=>{
   e.preventDefault();
   const p=$("t-pass").value.trim();if(!p)return;
-  token=p;store.set("pt-token",p);$("t-pass").value="";$("t-login").hidden=true;sync();
+  $("t-pass").value="";setToken(p);
+});
+$("l-login").addEventListener("submit",e=>{
+  e.preventDefault();
+  const p=$("l-pass").value.trim();if(!p)return;
+  $("l-pass").value="";setToken(p);
 });
 $("t-syncnow").addEventListener("click",sync);
 document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")sync()});
@@ -943,12 +1137,11 @@ $("m-log").addEventListener("click",()=>{
   const legs=multi.read().filter(l=>num(l.odds)>1);
   if(!legs.length){toast("Add at least one leg with odds first.");return}
   const O=legs.reduce((a,l)=>a*num(l.odds),1);
-  $("t-desc").value=legs.map(l=>l.name||"Leg").join(" + ");
-  $("t-odds").value=O.toFixed(2);
-  $("t-stake").value=num($("m-stake").value)>0?num($("m-stake").value).toFixed(2):"";
-  $("t-chsel").value="";
-  show("tracker");
-  $("t-loghead").scrollIntoView({behavior:"smooth",block:"start"});
+  const ps=legs.map(l=>num(l.prob)/100);
+  const p=ps.every(x=>x>0&&x<=1)?ps.reduce((a,x)=>a*x,1):NaN;
+  // Only link closing prices when every leg came from live odds at the price shown.
+  const linked=legs.every(l=>l.meta&&Math.abs(num(l.odds)-l.meta.price)<0.005);
+  prefillBet({desc:legs.map(l=>l.name||"Leg").join(" + "),odds:O,stake:num($("m-stake").value),p,legs:linked?legs.map(l=>l.meta):null});
 });
 
 $("t-date").value=todayStr();
