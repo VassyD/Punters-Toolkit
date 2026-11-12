@@ -268,6 +268,14 @@ footer strong{color:var(--ink)}
     </table></div>
     <p class="note">Set each bet's result once it's settled. Void bets return the stake and don't count towards win rate. Bets logged from Live odds, the Multi builder or the Multi tab record their closing price automatically, about 10 to 20 minutes before the game starts.</p>
 
+    <h2 class="sub">Export</h2>
+    <div class="live-bar">
+      <button class="btn solid" type="button" id="t-json">Export for review (JSON)</button>
+      <button class="btn" type="button" id="t-csv">Export spreadsheet (CSV)</button>
+      <button class="btn" type="button" id="t-copy">Copy for review</button>
+    </div>
+    <p class="note">The review file has every bet with its legs, est. chance, result and closing price, plus your challenges. Upload it to Claude to analyse. The spreadsheet has one row per bet for Excel or Google Sheets. Copy for review puts the same data as the review file on your clipboard, which is handy on a phone. Your passcode is never included.</p>
+
     <h2 class="sub">Est. chance vs results</h2>
     <div class="tablewrap"><table>
       <thead><tr><th>Est. chance</th><th>Settled bets</th><th>Expected wins</th><th>Actual wins</th></tr></thead>
@@ -1311,6 +1319,75 @@ $("t-limitform").addEventListener("submit",e=>{
   change(()=>{T.settings={...T.settings,monthlyLimit:lim>0?lim:null,updatedAt:nowIso()}});
   $("t-limit").blur();
   toast(lim>0?`Monthly limit set to ${money(lim)}.`:"Monthly limit switched off.");
+});
+
+// ---- Export ----
+const r2=n=>Number.isFinite(n)?Math.round(n*100)/100:null;
+const r4=n=>Number.isFinite(n)?Math.round(n*10000)/10000:null;
+function exportBets(){
+  return [...liveBets()].sort((a,b)=>String(a.date).localeCompare(String(b.date))||String(a.createdAt).localeCompare(String(b.createdAt))).map(b=>{
+    const c=closeOf(b),ch=b.challengeId?findCh(b.challengeId):null,pl=betPL(b);
+    const legs=(b.legs||[]).map(l=>{
+      const cl=b.close&&b.close.legs&&b.close.legs[legKey(l)];
+      return {match:l.match||"",selection:l.team||"",market:l.market||"h2h",sport:l.sport||"",start:l.start||"",price:l.price,
+        estChance:r4(l.p),bookmaker:l.bookKey||"",closePrice:cl?cl.price:null,closeFairChance:cl?r4(cl.fair):null};
+    });
+    return {id:b.id,date:b.date||"",loggedAt:b.createdAt||"",description:b.desc,bookmaker:b.book||"",legCount:legs.length||null,
+      odds:b.odds,stake:b.stake,result:b.result,profitLoss:r2(pl),estChance:r4(b.p),evPer100:Number.isFinite(b.p)?r2((b.p*b.odds-1)*100):null,
+      closeOdds:c?r2(c.odds):null,vsClosePct:c?r2(c.clv*100):null,closeFairChance:c?r4(c.fair):null,
+      challenge:ch&&!ch.deleted?ch.name:"",challengeStep:ch?liveBets().filter(x=>x.challengeId===b.challengeId).sort((x,y)=>String(x.createdAt).localeCompare(String(y.createdAt))).findIndex(x=>x.id===b.id)+1:null,
+      newMoney:r2(newMoney(b)),legs};
+  });
+}
+function exportJson(){
+  const bets=exportBets(),settled=bets.filter(b=>b.result==="won"||b.result==="lost");
+  const staked=settled.reduce((a,b)=>a+b.stake,0),pl=settled.reduce((a,b)=>a+b.profitLoss,0);
+  return JSON.stringify({
+    app:"Punter's Toolkit",format:1,exportedAt:new Date().toISOString(),
+    notes:"estChance and closeFairChance are 0-1 with the bookmaker margin removed. vsClosePct compares the odds taken with the closing odds. newMoney excludes rolled-over challenge winnings.",
+    summary:{bets:bets.length,settled:settled.length,won:settled.filter(b=>b.result==="won").length,pending:bets.filter(b=>b.result==="pending").length,
+      staked:r2(staked),profitLoss:r2(pl),returnOnStakePct:staked>0?r2(pl/staked*100):null,monthlyLimit:num(T.settings.monthlyLimit)>0?num(T.settings.monthlyLimit):null},
+    bets,
+    challenges:liveChallenges().map(ch=>{const L=ladder(ch);return {name:ch.name,start:ch.start,target:ch.target,state:L.state,bank:L.bank,steps:L.rows.length,startedAt:ch.createdAt}})
+  },null,2);
+}
+function csvCell(v){
+  if(v==null)return "";
+  let s=String(v);
+  if(typeof v==="string"&&/^[=+\-@\t\r]/.test(s))s="'"+s; // stop spreadsheets treating text as a formula
+  return /[",\r\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s;
+}
+function exportCsv(){
+  const cols=[["date","Date"],["description","Bet"],["bookmaker","Bookmaker"],["legCount","Legs"],["odds","Odds"],["stake","Stake"],["result","Result"],["profitLoss","Profit/loss"],
+    ["estChance","Est. chance"],["evPer100","EV per $100"],["closeOdds","Closing odds"],["vsClosePct","Vs close %"],["closeFairChance","Closing fair chance"],["challenge","Challenge"],["challengeStep","Step"],["newMoney","New money"],["legDetail","Leg details"],["loggedAt","Logged at"]];
+  const rows=exportBets().map(b=>({...b,
+    estChance:b.estChance!=null?r2(b.estChance*100)+"%":"",closeFairChance:b.closeFairChance!=null?r2(b.closeFairChance*100)+"%":"",
+    legDetail:b.legs.map(l=>`${l.match}: ${l.selection} @ ${l.price}${l.estChance!=null?` (est ${r2(l.estChance*100)}%)`:""}${l.closePrice?` close ${l.closePrice}`:""}`).join(" | ")}));
+  return "﻿"+[cols.map(c=>c[1]).join(","),...rows.map(r=>cols.map(([k])=>csvCell(r[k])).join(","))].join("\r\n");
+}
+function downloadText(name,text,type){
+  const url=URL.createObjectURL(new Blob([text],{type}));
+  const a=document.createElement("a");a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),2000);
+}
+async function freshForExport(){if(token&&TRACKER_ENDPOINT)await sync()}
+const stamp=()=>todayStr();
+$("t-json").addEventListener("click",async()=>{
+  await freshForExport();
+  if(!liveBets().length){toast("There are no bets to export yet.");return}
+  downloadText(`punters-toolkit-review-${stamp()}.json`,exportJson(),"application/json");
+  toast(`Exported ${liveBets().length} bets. Upload the file to Claude for a review.`);
+});
+$("t-csv").addEventListener("click",async()=>{
+  await freshForExport();
+  if(!liveBets().length){toast("There are no bets to export yet.");return}
+  downloadText(`punters-toolkit-bets-${stamp()}.csv`,exportCsv(),"text/csv;charset=utf-8");
+  toast(`Exported ${liveBets().length} bets as a spreadsheet.`);
+});
+$("t-copy").addEventListener("click",async()=>{
+  const text=exportJson(); // copy straight away so the browser still treats it as part of the tap
+  try{await navigator.clipboard.writeText(text);toast("Copied. Paste it into your chat with Claude.")}
+  catch(e){toast("Your browser blocked copying. Use Export for review instead.")}
 });
 
 $("t-login").addEventListener("submit",e=>{
