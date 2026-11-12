@@ -1036,7 +1036,7 @@ function prefillBet({desc,odds:o,stake,p,book,legs}){
   pendingLegs=Array.isArray(legs)&&legs.length?legs:null;
   const note=$("t-linked");
   note.hidden=!pendingLegs;
-  if(pendingLegs)note.textContent=`Linked to ${pendingLegs.length} live market${pendingLegs.length===1?"":"s"}. The closing price will be recorded before ${pendingLegs.length===1?"the game starts":"each game starts"}.`;
+  if(pendingLegs)note.innerHTML=`Linked to ${pendingLegs.length} live market${pendingLegs.length===1?"":"s"}. The closing price will be recorded before ${pendingLegs.length===1?"the game starts":"each game starts"}. Change the odds to match your slip if they differ. <button class="del" type="button" id="t-unlink">Unlink</button>`;
   resetLimitArm();
   show("tracker");
   $("t-loghead").scrollIntoView({behavior:"smooth",block:"start"});
@@ -1269,8 +1269,13 @@ function monthSpend(month=monthOf(todayStr())){return liveBets().filter(b=>month
 let limitArmed=false;
 function resetLimitArm(){limitArmed=false;$("t-logbtn").textContent="Log bet"}
 ["t-desc","t-odds","t-stake","t-date","t-chsel"].forEach(id=>$(id).addEventListener("input",resetLimitArm));
-// Typing over a linked bet's description or odds means it's a different bet, so drop the market link.
-["t-desc","t-odds"].forEach(id=>$(id).addEventListener("input",()=>{if(pendingLegs){pendingLegs=null;$("t-linked").hidden=true}}));
+// Editing the description or odds keeps the market link: the price you actually get often differs a little from the feed.
+// To log a different bet, use Unlink.
+$("t-linked").addEventListener("click",e=>{
+  if(!e.target.closest("#t-unlink"))return;
+  pendingLegs=null;$("t-linked").hidden=true;
+  toast("Unlinked. This bet won't record an est. chance per leg or a closing price.");
+});
 
 $("t-betform").addEventListener("submit",e=>{
   e.preventDefault();
@@ -1335,7 +1340,7 @@ function exportBets(){
     return {id:b.id,date:b.date||"",loggedAt:b.createdAt||"",description:b.desc,bookmaker:b.book||"",legCount:legs.length||null,
       odds:b.odds,stake:b.stake,result:b.result,profitLoss:r2(pl),estChance:r4(b.p),evPer100:Number.isFinite(b.p)?r2((b.p*b.odds-1)*100):null,
       closeOdds:c?r2(c.odds):null,vsClosePct:c?r2(c.clv*100):null,closeFairChance:c?r4(c.fair):null,
-      challenge:ch&&!ch.deleted?ch.name:"",challengeStep:ch?liveBets().filter(x=>x.challengeId===b.challengeId).sort((x,y)=>String(x.createdAt).localeCompare(String(y.createdAt))).findIndex(x=>x.id===b.id)+1:null,
+      challenge:ch&&!ch.deleted?ch.name:"",challengeStep:ch&&!ch.deleted?liveBets().filter(x=>x.challengeId===b.challengeId).sort((x,y)=>String(x.createdAt).localeCompare(String(y.createdAt))).findIndex(x=>x.id===b.id)+1:null,
       newMoney:r2(newMoney(b)),legs};
   });
 }
