@@ -70,6 +70,16 @@ td:first-child{font-family:var(--f-body)}
 .seg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--line);border-radius:5px;overflow:hidden;max-width:100%}
 .seg button{font-family:var(--f-display);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:.95rem;border:0;background:transparent;color:var(--muted);padding:7px 16px;cursor:pointer}
 .seg button[aria-pressed="true"]{background:var(--board);color:var(--board-ink)}
+/* Value finder */
+.vf-books{display:grid;gap:6px}
+.vf-books-label{font-size:.78rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+#vf-books{display:flex;flex-wrap:wrap;gap:6px 14px}
+#vf-books label{display:flex;align-items:center;gap:6px;font-size:.92rem;font-weight:500;letter-spacing:0;text-transform:none;color:var(--ink)}
+#vf-books input{width:auto;padding:0;accent-color:var(--turf)}
+.vf-table td small{display:block;color:var(--muted);font-family:var(--f-body)}
+.vf-table td.edge{color:var(--good);font-weight:700}
+.vf-table td .btn{white-space:nowrap;margin:2px 0}
+.vf-flag{color:var(--bad);font-weight:600}
 /* Automatic job status and credits */
 .autostatus{display:grid;gap:4px;padding:10px 12px;border:1px solid var(--line);border-radius:6px;background:var(--bg);font-size:.86rem}
 .autostatus b{font-family:var(--f-display);font-weight:600;letter-spacing:.05em;text-transform:uppercase;font-size:.8rem;color:var(--muted)}
@@ -146,6 +156,7 @@ footer strong{color:var(--ink)}
 
   <nav role="tablist" aria-label="Calculators">
     <button role="tab" data-tab="live" aria-selected="true">Live odds</button>
+    <button role="tab" data-tab="finder" aria-selected="false">Value finder</button>
     <button role="tab" data-tab="builder" aria-selected="false">Multi builder</button>
     <button role="tab" data-tab="tracker" aria-selected="false">Tracker</button>
     <button role="tab" data-tab="value" aria-selected="false">Value &amp; Kelly</button>
@@ -180,6 +191,40 @@ footer strong{color:var(--ink)}
       <button class="btn solid" type="submit">Connect</button>
     </form>
     <div class="matches" id="l-list"></div>
+  </section>
+
+  <!-- VALUE FINDER -->
+  <section class="panel" data-panel="finder" hidden>
+    <p class="lede">Single bets where one of your bookmakers pays more than the fair price, which is the market's average with every bookmaker's margin removed. These are the only bets in the toolkit with a positive expected return. Edges are small and prices move, so check the price on the bookmaker's site before you bet.</p>
+    <div class="grid">
+      <label>Competition
+        <select id="vf-sport">
+          <option value="afl">AFL</option><option value="nrl">NRL</option><option value="nba">NBA</option>
+          <option value="aleague">A-League</option><option value="bbl">BBL</option><option value="mlb">MLB</option>
+        </select>
+      </label>
+      <button class="btn solid" type="button" id="vf-scan">Scan head-to-head (1 credit)</button>
+      <label>Minimum edge
+        <select id="vf-min"><option value="0.01">1%</option><option value="0.02" selected>2%</option><option value="0.03">3%</option><option value="0.05">5%</option></select>
+      </label>
+      <label>Bookmakers pricing it
+        <select id="vf-minbooks"><option value="2">2 or more</option><option value="3" selected>3 or more</option><option value="4">4 or more</option></select>
+      </label>
+      <label>Bankroll $<input id="vf-bank" type="number" min="0" step="10" placeholder="e.g. 500"></label>
+      <label>Stake size
+        <select id="vf-kelly"><option value="0.1">Tenth Kelly</option><option value="0.25" selected>Quarter Kelly</option><option value="0.5">Half Kelly</option></select>
+      </label>
+      <label>Max stake per bet
+        <select id="vf-cap"><option value="0.01">1% of bankroll</option><option value="0.02" selected>2% of bankroll</option><option value="0.05">5% of bankroll</option></select>
+      </label>
+    </div>
+    <div class="vf-books"><span class="vf-books-label">My bookmakers</span><div id="vf-books"></div></div>
+    <p class="note" id="vf-status"></p>
+    <div class="tablewrap"><table class="vf-table">
+      <thead><tr><th>Selection</th><th>Price</th><th>Fair odds</th><th>Edge</th><th>Stake</th><th><span class="sr">Log</span></th></tr></thead>
+      <tbody id="vf-list"></tbody>
+    </table></div>
+    <p class="note">Edge is your price × the fair chance − 1, so +3% means you'd expect about $3 back for every $100 staked over many similar bets. The fair chance includes the bookmaker being checked, which keeps the edge on the cautious side. Ladbrokes and Neds count once. Player lines appear here once you've loaded them on Live odds; one-sided markets like anytime scorer are left out because their fair chance can't be worked out. Stakes use the Kelly formula scaled down to your setting and capped, because a single price can be wrong. Prices marked "may be stale" haven't updated as recently as the rest of the market, which is a common reason for a price looking generous.</p>
   </section>
 
   <!-- MULTI BUILDER -->
@@ -472,6 +517,7 @@ function show(name){
   document.querySelectorAll("section.panel").forEach(p=>p.hidden=p.dataset.panel!==name);
   try{localStorage.setItem("pt-tab",name)}catch(e){}
   if(name==="tracker"&&window.trackerReady)sync();
+  if(name==="finder"&&window.trackerReady)renderValue();
 }
 tabs.forEach(t=>t.addEventListener("click",()=>show(t.dataset.tab)));
 try{const s=localStorage.getItem("pt-tab");if(s&&tabs.some(t=>t.dataset.tab===s))show(s)}catch(e){}
@@ -747,7 +793,7 @@ async function loadProps(evId,btn){
     const ev=(eventsList&&eventsList.events.find(e=>e.id===evId))||{};
     d.sport=liveSport;d.id=d.id||evId;d.home=d.home||ev.home;d.away=d.away||ev.away;d.start=d.start||ev.start;d.books=d.books||[];
     propsData.set(evId+"|"+liveMarket,d);saveProps();
-    fillBookPicker();renderPlayerView();renderBuilder();
+    fillBookPicker();renderPlayerView();renderBuilder();renderValue();
   }catch(e){
     btn.disabled=false;btn.textContent="Try again";
     $("l-status").textContent="Couldn't load that market: "+e.message;
@@ -851,7 +897,7 @@ function renderLive(){
     `<p class="note">${d.offSeason
       ?`${esc(sportName(d.sport))} is out of season, so there are no markets yet. Check back closer to the start of the season.`
       :`No upcoming ${esc(sportName(d.sport))} matches listed right now. The bookies may not have posted markets yet.`}</p>`;
-  renderBuilder();
+  renderBuilder();renderValue();
 }
 
 $("l-list").addEventListener("click",e=>{
@@ -1025,6 +1071,141 @@ $("b-list").addEventListener("click",e=>{
     prefillBet({source,practice,challengeId:practice?"":$("b-ch").value,tag:rank===1?"Builder top pick":"Builder other pick",desc:m.legs.map(l=>l.label).join(" + "),odds:m.odds,stake:num($("b-stake").value),p:m.p,book:books.length===1?books[0]:"",legs:m.legs.map(builderLegMeta)});
   }
 });
+
+/* Value finder */
+// Settings live with the tracker so they sync between devices: minimum edge, bookmaker count, bankroll, Kelly fraction, cap, my bookmakers.
+const VF_DEFAULTS={min:0.02,minBooks:3,bank:null,kelly:0.25,cap:0.02,books:null};
+// Changes made in quick succession are gathered and saved together, and show straight away.
+let vfPending={},vfSaveTimer=null;
+const vfSettings=()=>({...VF_DEFAULTS,...((T.settings&&T.settings.finder)||{}),...vfPending});
+function vfMyBooks(){const s=vfSettings();return Array.isArray(s.books)&&s.books.length?s.books:[SB]}
+function vfSave(patch){
+  Object.assign(vfPending,patch);
+  clearTimeout(vfSaveTimer);
+  vfSaveTimer=setTimeout(()=>{
+    const p=vfPending;vfPending={};
+    change(()=>{T.settings={...T.settings,finder:{...VF_DEFAULTS,...((T.settings&&T.settings.finder)||{}),...p},updatedAt:nowIso()}});
+  },400);
+}
+function vfFillControls(){
+  const s=vfSettings();
+  if(document.activeElement!==$("vf-min"))$("vf-min").value=String(s.min);
+  if(document.activeElement!==$("vf-minbooks"))$("vf-minbooks").value=String(s.minBooks);
+  if(document.activeElement!==$("vf-bank"))$("vf-bank").value=s.bank>0?s.bank:"";
+  if(document.activeElement!==$("vf-kelly"))$("vf-kelly").value=String(s.kelly);
+  if(document.activeElement!==$("vf-cap"))$("vf-cap").value=String(s.cap);
+  const mine=new Set(vfMyBooks());
+  const keys=[...new Set([...Object.keys(bookTitles),...mine])].sort((a,b)=>(bookTitles[a]||a).localeCompare(bookTitles[b]||b));
+  $("vf-books").innerHTML=keys.map(k=>`<label><input type="checkbox" data-book="${esc(k)}"${mine.has(k)?" checked":""}> ${esc(bookTitles[k]||k)}</label>`).join("")||'<span class="note">Your bookmakers appear here after a scan.</span>';
+}
+$("vf-books").addEventListener("change",()=>{
+  const books=[...$("vf-books").querySelectorAll("input[data-book]:checked")].map(i=>i.dataset.book);
+  vfSave({books});renderValue();
+});
+[["vf-min","min"],["vf-minbooks","minBooks"],["vf-kelly","kelly"],["vf-cap","cap"]].forEach(([id,k])=>$(id).addEventListener("change",()=>{vfSave({[k]:num($(id).value)});renderValue()}));
+$("vf-bank").addEventListener("input",()=>{const v=num($("vf-bank").value);vfSave({bank:v>0?v:null});renderValue()});
+
+// Every selection where one of my bookmakers beats the fair price by at least the minimum edge.
+function findValue(now=Date.now()){
+  const s=vfSettings(),mine=new Set(vfMyBooks()),out=[];
+  // Head-to-head
+  if(liveData)for(const ev of liveData.events){
+    if(Date.parse(ev.start)<=now)continue;
+    const {names}=pricesFor(ev);
+    const fair=consensus(ev,names);
+    const full=ev.books.filter(b=>names.every(n=>b.h2h[n]>1));
+    const groups=new Set(full.map(b=>BOOK_GROUPS[b.key]||b.key)).size;
+    if(groups<s.minBooks)continue;
+    const newest=Math.max(...ev.books.map(b=>Date.parse(b.updated)||0));
+    names.forEach((n,j)=>{
+      const p=fair[j];if(!(p>0))return;
+      for(const b of ev.books){
+        if(!mine.has(b.key)||!(b.h2h[n]>1))continue;
+        const price=b.h2h[n],edge=p*price-1;
+        if(edge<s.min)continue;
+        const lag=newest&&Date.parse(b.updated)?(newest-Date.parse(b.updated))/60000:0;
+        out.push({kind:"h2h",label:`${n} H2H`,match:`${ev.home} v ${ev.away}`,eventId:ev.id,start:ev.start,book:b.title,bookKey:b.key,price,p,edge,groups,stale:lag>20,
+          meta:legMeta(ev,n,price,b.key,p)});
+      }
+    });
+  }
+  // Player over/under lines loaded on Live odds (one-sided markets have no fair chance, so they're skipped)
+  for(const pm of propsData.values()){
+    if(!pm.books.length||Date.parse(pm.start)<=now)continue;
+    for(const sel of propSelections(pm)){
+      if(sel.rough||!(sel.fair>0))continue;
+      const groups=new Set(Object.keys(sel.prices).map(k=>BOOK_GROUPS[k]||k)).size;
+      if(groups<s.minBooks)continue;
+      for(const [k,price] of Object.entries(sel.prices)){
+        if(!mine.has(k))continue;
+        const edge=sel.fair*price-1;
+        if(edge<s.min)continue;
+        const title=(pm.books.find(b=>b.key===k)||{}).title||k;
+        out.push({kind:"player",label:sel.label,match:`${pm.home} v ${pm.away}`,eventId:pm.id,start:pm.start,book:title,bookKey:k,price,p:sel.fair,edge,groups,stale:false,
+          meta:propMeta(pm,sel,price,k)});
+      }
+    }
+  }
+  return out.sort((a,b)=>b.edge-a.edge);
+}
+// Kelly stake for the chosen fraction, capped as a share of bankroll; rounded down to whole dollars.
+function vfStake(v){
+  const s=vfSettings();if(!(s.bank>0))return null;
+  const f=(v.p*v.price-1)/(v.price-1);
+  const stake=Math.min(s.bank*s.kelly*Math.max(0,f),s.bank*s.cap);
+  return Math.max(0,Math.floor(stake));
+}
+
+let vfResults=[];
+function renderValue(){
+  vfFillControls();
+  const status=$("vf-status"),list=$("vf-list"),s=vfSettings();
+  const playerMatches=[...propsData.values()].filter(pm=>pm.books.length&&Date.parse(pm.start)>Date.now()).length;
+  if(!liveData&&!playerMatches){status.textContent="Choose a competition and press Scan. It uses the same 1 credit as loading odds on Live odds.";list.innerHTML="";vfResults=[];return}
+  vfResults=findValue();
+  const scope=[liveData?`${sportName(liveData.sport)} head-to-head (prices ${agoText(liveData.fetchedAt)})`:"",playerMatches?`player lines from ${playerMatches} match${playerMatches===1?"":"es"}`:""].filter(Boolean).join(" and ");
+  const mineNames=vfMyBooks().map(k=>bookTitles[k]||k).join(", ");
+  status.textContent=vfResults.length
+    ?`${vfResults.length} price${vfResults.length===1?"":"s"} at least ${pct(s.min,0)} above fair at ${mineNames}, from ${scope}.${s.bank>0?"":" Set a bankroll to see suggested stakes."}`
+    :`Nothing is ${pct(s.min,0)} or more above fair at ${mineNames} in ${scope}. That's normal: bookmakers are usually close to fair. Try a 1% minimum, tick more bookmakers you can bet with, or scan again closer to game time.`;
+  list.innerHTML=vfResults.map((v,i)=>{
+    const st=vfStake(v),sh=sharedGames([v.meta]);
+    const when=new Date(v.start).toLocaleString("en-AU",{weekday:"short",day:"numeric",month:"short",hour:"numeric",minute:"2-digit"});
+    const flags=[v.stale?'<span class="vf-flag">Price may be stale</span>':"",sh.length?'<span class="vf-flag">You already have a pending bet on this game</span>':""].filter(Boolean).join(" · ");
+    return `<tr>
+      <td>${esc(v.label)}<small>${esc(v.match)} · ${esc(when)} · ${esc(v.book)} · ${v.groups} bookmakers</small>${flags?`<small>${flags}</small>`:""}</td>
+      <td>${odds(v.price)}</td>
+      <td>${odds(1/v.p)}<small>${pct(v.p)}</small></td>
+      <td class="edge">+${pct(v.edge)}</td>
+      <td>${st==null?"–":st>0?money(st):"<small>under $1</small>"}</td>
+      <td><button class="btn solid" type="button" data-vf="${i}">Log</button> <button class="btn" type="button" data-vf="${i}" data-practice="1">Practice</button></td>
+    </tr>`;
+  }).join("");
+}
+
+$("vf-list").addEventListener("click",e=>{
+  const btn=e.target.closest("button[data-vf]");if(!btn)return;
+  const v=vfResults[+btn.dataset.vf];if(!v)return;
+  const st=vfStake(v),s=vfSettings();
+  prefillBet({desc:v.label,odds:v.price,stake:st>0?st:NaN,p:v.p,book:v.book,legs:[v.meta],practice:btn.dataset.practice==="1",tag:"Value finder",
+    source:{from:"value",edge:Math.round(v.edge*10000)/10000,settings:{minEdge:s.min,minBooks:s.minBooks,kelly:s.kelly,cap:s.cap,bankroll:s.bank}}});
+});
+
+// Scan loads head-to-head for the chosen competition, the same as Live odds does.
+$("vf-scan").addEventListener("click",async()=>{
+  const sport=$("vf-sport").value,status=$("vf-status");
+  if(!ODDS_ENDPOINT){status.textContent="Live odds aren't connected yet.";return}
+  if(!token){showLogins();show("live");return}
+  liveSport=sport;liveMarket="h2h";
+  sportBtns.forEach(x=>x.setAttribute("aria-pressed",x.dataset.sport===sport));
+  fillMarketPicker();
+  status.textContent=`Scanning ${sportName(sport)}…`;
+  await loadLive();
+  if(!liveData||liveData.sport!==sport){status.textContent=$("l-status").textContent||"The scan didn't complete. Try again.";return}
+  renderValue();
+});
+$("vf-sport").addEventListener("change",()=>{try{localStorage.setItem("pt-vf-sport",$("vf-sport").value)}catch(e){}});
+try{const s=localStorage.getItem("pt-vf-sport");if(s)$("vf-sport").value=s}catch(e){}
 
 /* Tracker */
 const TRACKER_ENDPOINT=ODDS_ENDPOINT?ODDS_ENDPOINT.replace(/\/odds(\?.*)?$/,"/tracker"):"";
@@ -1301,6 +1482,7 @@ function applyLegResults(){
 }
 
 function renderTracker(){
+  if(window.trackerReady)renderValue();
   const bets=liveBets(),chs=liveChallenges();
   // Stats: real money only. Bonus-bet stakes aren't your money, so they don't count as staked.
   const real=bets.filter(b=>!b.practice);
@@ -1386,7 +1568,7 @@ function renderTracker(){
   const log=[...bets].sort((a,b)=>String(b.date).localeCompare(String(a.date))||String(b.createdAt).localeCompare(String(a.createdAt)));
   $("t-log").innerHTML=log.length?log.map(b=>{
     const p=betPL(b),ch=b.challengeId?findCh(b.challengeId):null;
-    const src=b.source&&b.source.from==="builder"?`builder pick ${b.source.rank} of ${b.source.of}`:b.source&&b.source.from==="multi"?"from Multi tab":"";
+    const src=b.source&&b.source.from==="builder"?`builder pick ${b.source.rank} of ${b.source.of}`:b.source&&b.source.from==="multi"?"from Multi tab":b.source&&b.source.from==="value"?`value finder, edge +${pct(b.source.edge)}`:"";
     const sub=[b.book,ch&&!ch.deleted?ch.name:"",Number.isFinite(b.p)?"est. "+pct(b.p):"",b.tag,src].filter(Boolean).map(esc).join(" · ");
     const badges=(b.practice?'<span class="tag prac">Practice</span>':"")+(b.betType==="boost"?'<span class="tag">Boost</span>':"")+(b.betType==="bonus"?'<span class="tag">Bonus bet</span>':"")+(b.settledBy==="legs"?'<span class="tag">Auto-settled</span>':"");
     const c=closeOf(b);
@@ -1583,7 +1765,8 @@ function exportBets(){
     });
     return {id:b.id,date:b.date||"",loggedAt:b.createdAt||"",description:b.desc,bookmaker:b.book||"",legCount:legs.length||null,
       practice:!!b.practice,betType:b.betType||"normal",reason:b.tag||"",
-      source:b.source?b.source.from:"manual",builderRank:b.source&&b.source.rank||null,builderOf:b.source&&b.source.of||null,builderSettings:b.source&&b.source.settings||null,
+      source:b.source?b.source.from:"manual",builderRank:b.source&&b.source.rank||null,builderOf:b.source&&b.source.of||null,builderSettings:b.source&&b.source.from==="builder"&&b.source.settings||null,
+      valueEdge:b.source&&b.source.from==="value"?r4(b.source.edge):null,valueSettings:b.source&&b.source.from==="value"&&b.source.settings||null,
       odds:b.odds,stake:b.stake,result:b.result,cashout:Number.isFinite(b.cashout)?b.cashout:null,settledBy:b.settledBy||"you",
       profitLoss:r2(pl),estChance:r4(b.p),evPer100:Number.isFinite(b.p)?r2((b.p*b.odds-1)*100):null,
       closeOdds:c?r2(c.odds):null,vsClosePct:c?r2(c.clv*100):null,closeFairChance:c?r4(c.fair):null,
@@ -1616,7 +1799,7 @@ function exportCsv(){
   const cols=[["date","Date"],["description","Bet"],["practice","Practice"],["betType","Bet type"],["reason","Reason"],["sourceText","Source"],["bookmaker","Bookmaker"],["legCount","Legs"],["odds","Odds"],["stake","Stake"],["result","Result"],["cashout","Cash-out"],["profitLoss","Profit/loss"],
     ["estChance","Est. chance"],["evPer100","EV per $100"],["closeOdds","Closing odds"],["vsClosePct","Vs close %"],["closeFairChance","Closing fair chance"],["challenge","Challenge"],["challengeStep","Step"],["newMoney","New money"],["legDetail","Leg details"],["loggedAt","Logged at"]];
   const rows=exportBets().map(b=>({...b,practice:b.practice?"yes":"",
-    sourceText:b.source==="builder"?`Builder pick ${b.builderRank} of ${b.builderOf}`:b.source==="multi"?"Multi tab":"Manual",
+    sourceText:b.source==="builder"?`Builder pick ${b.builderRank} of ${b.builderOf}`:b.source==="multi"?"Multi tab":b.source==="value"?`Value finder (edge +${r2(b.valueEdge*100)}%)`:"Manual",
     estChance:b.estChance!=null?r2(b.estChance*100)+"%":"",closeFairChance:b.closeFairChance!=null?r2(b.closeFairChance*100)+"%":"",
     legDetail:b.legs.map(l=>`${l.match}: ${l.selection} @ ${l.price}${l.estChance!=null?` (est ${r2(l.estChance*100)}%)`:""}${l.closePrice?` close ${l.closePrice}`:""}${l.result?` ${l.result}`:""}`).join(" | ")}));
   return "﻿"+[cols.map(c=>c[1]).join(","),...rows.map(r=>cols.map(([k])=>csvCell(r[k])).join(","))].join("\r\n");
