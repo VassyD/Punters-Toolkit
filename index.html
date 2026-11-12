@@ -88,6 +88,13 @@ details[open] > summary{margin-bottom:12px}
 .ladder-meta{display:flex;justify-content:space-between;gap:8px;padding:6px 12px 0;font-family:var(--f-num);font-size:.82rem;color:var(--muted);font-variant-numeric:tabular-nums}
 #t-log select{width:auto;padding:4px 6px;font-family:var(--f-body);font-size:.85rem}
 #t-log td small{display:block;color:var(--muted);font-family:var(--f-body)}
+#t-log details{margin-top:4px;font-family:var(--f-body);font-size:.82rem}
+#t-log details summary{cursor:pointer;color:var(--turf);font-weight:600}
+#t-log .legrow{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;padding:3px 0;border-top:1px dashed var(--line)}
+#t-log .legrow span{flex:1 1 160px;min-width:0}
+#t-log .cash{width:7em;margin-top:4px;padding:4px 6px;font-size:.85rem}
+.tag{display:inline-block;font-family:var(--f-display);font-weight:600;font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;padding:0 6px;border-radius:3px;background:var(--line);color:var(--ink);margin-right:4px}
+.tag.prac{background:var(--signal-soft);color:var(--ink)}
 #t-log .pos,.ladder td.pos{color:var(--good)} #t-log .neg,.ladder td.neg{color:var(--bad)}
 .del{border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:4px;padding:3px 8px;cursor:pointer;font-size:.8rem;white-space:nowrap}
 .del.armed{border-color:var(--bad);color:var(--bad)}
@@ -200,6 +207,7 @@ footer strong{color:var(--ink)}
           <option value="props">Player markets only</option>
         </select>
       </label>
+      <label>For challenge<select id="b-ch"><option value="">None</option></select></label>
       <label>Stake $<input id="b-stake" type="number" step="1" min="0" value="20"></label>
     </div>
     <div class="board" aria-live="polite">
@@ -232,7 +240,9 @@ footer strong{color:var(--ink)}
       <div><small>Pending</small><b id="t-pend">–</b></div>
       <div><small>This month</small><b id="t-month">–</b></div>
       <div><small>Vs closing price</small><b id="t-clv">–</b></div>
+      <div><small>Practice bets</small><b id="t-prac">–</b></div>
     </div>
+    <p class="note">Profit, staked, return and win rate count real-money bets only. Practice bets show separately, and both kinds feed the est. chance tables below.</p>
 
     <h2 class="sub">Challenges</h2>
     <div class="matches" id="t-challenges"></div>
@@ -254,11 +264,28 @@ footer strong{color:var(--ink)}
       <label>Stake $<input id="t-stake" type="number" step="0.01" min="0.01"></label>
       <label>Date<input id="t-date" type="date"></label>
       <label>Est. chance %<input id="t-p" type="number" step="0.1" min="0" max="100" placeholder="optional"></label>
+      <label>Bet type
+        <select id="t-type">
+          <option value="normal" selected>Normal</option>
+          <option value="boost">Boosted odds</option>
+          <option value="bonus">Bonus bet</option>
+        </select>
+      </label>
+      <label>Reason<input id="t-tag" type="text" class="name" list="t-tags" placeholder="optional"></label>
+      <label class="inline span" for="t-practice"><input id="t-practice" type="checkbox"> Practice bet: tracked for learning, no real money</label>
       <label>Challenge<select id="t-chsel"><option value="">None</option></select></label>
       <button class="btn solid" type="submit" id="t-logbtn">Log bet</button>
       <p id="t-linked" class="note span" hidden></p>
     </form>
     <datalist id="t-books"></datalist>
+    <datalist id="t-tags">
+      <option value="Builder top pick"></option>
+      <option value="Builder other pick"></option>
+      <option value="Gut feel"></option>
+      <option value="Home favourite"></option>
+      <option value="Tipster"></option>
+      <option value="Chasing a loss"></option>
+    </datalist>
     <p id="t-formerr" class="note err" hidden></p>
 
     <h2 class="sub">Bet log</h2>
@@ -282,6 +309,13 @@ footer strong{color:var(--ink)}
       <tbody id="t-calib"></tbody>
     </table></div>
     <p class="note" id="t-calibnote"></p>
+
+    <h2 class="sub">Legs: est. chance vs results</h2>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Est. chance</th><th>Settled legs</th><th>Expected wins</th><th>Actual wins</th></tr></thead>
+      <tbody id="t-legcalib"></tbody>
+    </table></div>
+    <p class="note">Each leg of a multi on its own, so you can see whether short favourites win as often as their price says. Head-to-head legs settle automatically from final scores where the scores feed covers the competition. Set player legs yourself under Legs in the bet log.</p>
 
     <h2 class="sub">Monthly limit</h2>
     <form id="t-limitform" class="grid">
@@ -942,11 +976,18 @@ function renderBuilder(){
     <div class="match-foot">
       <span class="lineinfo">$${stake.toLocaleString("en-AU")} returns ${money(m.odds*stake)} if every leg wins.</span>
       <button class="btn" type="button" data-build="${i}">Load into Multi</button>
+      <button class="btn" type="button" data-logbuild="${i}" data-practice="1">Log as practice</button>
       <button class="btn solid" type="button" data-logbuild="${i}">Log this bet</button>
     </div>
   </article>`).join("");
 }
 ["b-target","b-tol","b-legs","b-src","b-pool","b-stake"].forEach(id=>$(id).addEventListener("input",renderBuilder));
+// Picking a challenge stakes the whole bank, like every challenge step.
+$("b-ch").addEventListener("change",()=>{
+  const ch=findCh($("b-ch").value);
+  if(ch){$("b-stake").value=ladder(ch).bank.toFixed(2);toast(`Stake set to the challenge bank, ${money(ladder(ch).bank)}.`)}
+  renderBuilder();
+});
 const builderLegMeta=l=>l.meta;
 $("b-list").addEventListener("click",e=>{
   const load=e.target.closest("button[data-build]"),log=e.target.closest("button[data-logbuild]");
@@ -958,7 +999,10 @@ $("b-list").addEventListener("click",e=>{
     show("multi");
   }else{
     const books=[...new Set(m.legs.map(l=>l.book).filter(Boolean))];
-    prefillBet({desc:m.legs.map(l=>l.label).join(" + "),odds:m.odds,stake:num($("b-stake").value),p:m.p,book:books.length===1?books[0]:"",legs:m.legs.map(builderLegMeta)});
+    const rank=+log.dataset.logbuild+1;
+    const source={from:"builder",rank,of:builderResults.length,settings:{target:num($("b-target").value),within:num($("b-tol").value),legs:$("b-legs").value,prices:$("b-src").value==="sb"?homeName():"best available",legsFrom:$("b-pool").value}};
+    const practice=log.dataset.practice==="1";
+    prefillBet({source,practice,challengeId:practice?"":$("b-ch").value,tag:rank===1?"Builder top pick":"Builder other pick",desc:m.legs.map(l=>l.label).join(" + "),odds:m.odds,stake:num($("b-stake").value),p:m.p,book:books.length===1?books[0]:"",legs:m.legs.map(builderLegMeta)});
   }
 });
 
@@ -1001,9 +1045,13 @@ function mergeById(a,b){
   return [...out.values()];
 }
 function withCloses(win,lose){
-  const l=lose.close&&lose.close.legs;if(!l)return win;
-  const w=(win.close&&win.close.legs)||{};
-  return {...win,close:{...(lose.close||{}),...(win.close||{}),legs:{...l,...w}}};
+  let out=win;
+  for(const f of ["close","auto"]){
+    const l=lose[f]&&lose[f].legs;if(!l)continue;
+    const w=(out[f]&&out[f].legs)||{};
+    out={...out,[f]:{...(lose[f]||{}),...(out[f]||{}),legs:{...l,...w}}};
+  }
+  return out;
 }
 function newerOf(a,b){
   const okA=a&&typeof a==="object",okB=b&&typeof b==="object";
@@ -1025,18 +1073,27 @@ function closeOf(b){
 }
 
 // Fill the Log a bet form from another tab. legs links the bet to live markets so its closing price is recorded.
-let pendingLegs=null;
-function prefillBet({desc,odds:o,stake,p,book,legs}){
+let pendingLegs=null,pendingSource=null;
+function prefillBet({desc,odds:o,stake,p,book,legs,source,practice,tag,challengeId}){
+  pendingSource=source||null;
+  $("t-practice").checked=!!practice;
+  $("t-type").value="normal";
+  $("t-tag").value=tag||"";
   $("t-desc").value=desc||"";
   $("t-odds").value=o>1?o.toFixed(2):"";
   $("t-stake").value=stake>0?stake.toFixed(2):"";
   $("t-p").value=Number.isFinite(p)?(p*100).toFixed(1):"";
   $("t-book").value=book||"";
-  $("t-chsel").value="";
+  renderTracker(); // refresh the challenge list first
+  const ch=challengeId&&findCh(challengeId);
+  $("t-chsel").value=ch?challengeId:"";
+  if(ch&&$("t-chsel").value===challengeId)$("t-stake").value=ladder(ch).bank.toFixed(2);
   pendingLegs=Array.isArray(legs)&&legs.length?legs:null;
   const note=$("t-linked");
   note.hidden=!pendingLegs;
-  if(pendingLegs)note.innerHTML=`Linked to ${pendingLegs.length} live market${pendingLegs.length===1?"":"s"}. The closing price will be recorded before ${pendingLegs.length===1?"the game starts":"each game starts"}. Change the odds to match your slip if they differ. <button class="del" type="button" id="t-unlink">Unlink</button>`;
+  const readyCount=$("t-chsel").options.length-1;
+  const chNote=practice?"":ch?` Logging as the next step of "${esc(ch.name||"Challenge")}".`:readyCount?` To make it a challenge step, choose the challenge under Challenge below.`:"";
+  if(pendingLegs)note.innerHTML=`Linked to ${pendingLegs.length} live market${pendingLegs.length===1?"":"s"}. The closing price will be recorded before ${pendingLegs.length===1?"the game starts":"each game starts"}. Change the odds to match your slip if they differ.${chNote} <button class="del" type="button" id="t-unlink">Unlink</button>`;
   resetLimitArm();
   show("tracker");
   $("t-loghead").scrollIntoView({behavior:"smooth",block:"start"});
@@ -1068,7 +1125,7 @@ async function sync(){
     if(!r.ok)throw new Error(d.error||"the Worker returned status "+r.status);
     T={challenges:mergeById(T.challenges,d.challenges),bets:mergeById(T.bets,d.bets),settings:newerOf(T.settings,d.settings)};
     if(rev===sentRev)dirty=false;else syncTimer=setTimeout(sync,800);
-    saveLocal();renderTracker();
+    saveLocal();renderTracker();applyLegResults();
     setSync("Synced at "+new Date().toLocaleTimeString("en-AU",{hour:"numeric",minute:"2-digit"}));
   }catch(e){
     setSync((dirty?"Saved on this device but not synced: ":"Couldn't sync: ")+(e.message||"no connection"));
@@ -1082,6 +1139,7 @@ function ladder(ch){
   const rows=steps.map((b,i)=>{
     if(b.result==="won")bank=bank-b.stake+b.stake*b.odds;
     else if(b.result==="lost")bank=bank-b.stake;
+    else if(b.result==="cashout"&&Number.isFinite(b.cashout))bank=bank-b.stake+b.cashout;
     return {b,n:i+1,after:b.result==="pending"?null:Math.round(bank*100)/100};
   });
   bank=Math.round(bank*100)/100;
@@ -1126,21 +1184,58 @@ function challengeHTML(ch){
   </article>`;
 }
 
-const resultName=r=>({pending:"Pending",won:"Won",lost:"Lost",void:"Void"})[r]||r;
-const betPL=b=>b.result==="won"?b.stake*(b.odds-1):b.result==="lost"?-b.stake:b.result==="void"?0:NaN;
+const resultName=r=>({pending:"Pending",won:"Won",lost:"Lost",void:"Void",cashout:"Cashed out"})[r]||r;
+// Profit or loss. A bonus bet's stake isn't your money: a win pays the profit only and a loss costs nothing.
+function betPL(b){
+  const bonus=b.betType==="bonus";
+  if(b.result==="won")return b.stake*(b.odds-1);
+  if(b.result==="lost")return bonus?0:-b.stake;
+  if(b.result==="void")return 0;
+  if(b.result==="cashout")return Number.isFinite(b.cashout)?(bonus?b.cashout:b.cashout-b.stake):NaN;
+  return NaN;
+}
+const isSettled=b=>b.result==="won"||b.result==="lost"||(b.result==="cashout"&&Number.isFinite(b.cashout));
+const realBets=()=>liveBets().filter(b=>!b.practice);
+
+// Leg results: your own setting wins, otherwise the automatic one from final scores.
+const legResult=(b,l)=>{const k=legKey(l);return (b.legResults&&b.legResults[k])||(b.auto&&b.auto.legs&&b.auto.legs[k])||null};
+const legIsAuto=(b,l)=>!(b.legResults&&b.legResults[legKey(l)])&&!!(b.auto&&b.auto.legs&&b.auto.legs[legKey(l)]);
+// What the legs say about the whole bet: lost as soon as one leg loses, won once every leg wins.
+// Void legs change the payout, so those bets are left for you to settle.
+function legsVerdict(b){
+  if(!Array.isArray(b.legs)||!b.legs.length)return null;
+  const rs=b.legs.map(l=>legResult(b,l));
+  if(rs.includes("lost"))return "lost";
+  if(rs.includes("void"))return null;
+  return rs.every(r=>r==="won")?"won":null;
+}
+// Settle pending bets the legs have decided. Runs after loading and after each sync.
+function applyLegResults(){
+  const due=liveBets().filter(b=>b.result==="pending"&&legsVerdict(b));
+  if(!due.length)return;
+  change(()=>{const t=nowIso();due.forEach(b=>{b.result=legsVerdict(b);b.settledBy="legs";b.updatedAt=t})});
+  toast(`${due.length} bet${due.length===1?"":"s"} settled from final scores.`);
+}
 
 function renderTracker(){
   const bets=liveBets(),chs=liveChallenges();
-  // Stats
-  const settled=bets.filter(b=>b.result==="won"||b.result==="lost");
-  const staked=settled.reduce((a,b)=>a+b.stake,0);
+  // Stats: real money only. Bonus-bet stakes aren't your money, so they don't count as staked.
+  const real=bets.filter(b=>!b.practice);
+  const settled=real.filter(isSettled);
+  const staked=settled.reduce((a,b)=>a+(b.betType==="bonus"?0:b.stake),0);
   const pl=settled.reduce((a,b)=>a+betPL(b),0);
-  const won=settled.filter(b=>b.result==="won").length;
-  const pend=bets.filter(b=>b.result==="pending");
+  const decided=settled.filter(b=>b.result==="won"||b.result==="lost");
+  const won=decided.filter(b=>b.result==="won").length;
+  const pend=real.filter(b=>b.result==="pending");
+
+  // Practice bets, on their own
+  const prac=bets.filter(b=>b.practice),pracDone=prac.filter(b=>b.result==="won"||b.result==="lost");
+  const pracWon=pracDone.filter(b=>b.result==="won").length,pracPL=pracDone.reduce((a,b)=>a+betPL(b),0);
+  $("t-prac").textContent=prac.length?`${pracWon}/${pracDone.length} won${pracDone.length?` · ${pracPL>0?"+":""}${money(pracPL)}`:""}${prac.length>pracDone.length?` · ${prac.length-pracDone.length} open`:""}`:"–";
   $("t-pl").textContent=settled.length?(pl>0?"+":"")+money(pl):"–"; sign($("t-pl"),settled.length?pl:NaN);
   $("t-staked").textContent=settled.length?money(staked):"–";
   $("t-roi").textContent=staked>0?(pl>0?"+":"")+pct(pl/staked):"–"; sign($("t-roi"),staked>0?pl:NaN);
-  $("t-wr").textContent=settled.length?`${pct(won/settled.length,0)} (${won}/${settled.length})`:"–";
+  $("t-wr").textContent=decided.length?`${pct(won/decided.length,0)} (${won}/${decided.length})`:"–";
   $("t-pend").textContent=pend.length?`${pend.length} · ${money(pend.reduce((a,b)=>a+b.stake,0))}`:"0";
 
   // Monthly limit (new money only)
@@ -1158,32 +1253,47 @@ function renderTracker(){
     sign($("t-clv"),avg);
   }else{$("t-clv").textContent="–";sign($("t-clv"),NaN)}
 
-  // Est. chance vs results
-  const rated=settled.filter(b=>Number.isFinite(b.p));
-  const buckets=[[0,.3,"Under 30%"],[.3,.45,"30–45%"],[.45,.55,"45–55%"],[.55,.7,"55–70%"],[.7,1.01,"70% and over"]];
-  const rowsC=buckets.map(([lo,hi,label])=>{
-    const g=rated.filter(b=>b.p>=lo&&b.p<hi);
-    if(!g.length)return "";
-    const exp=g.reduce((a,b)=>a+b.p,0),act=g.filter(b=>b.result==="won").length;
-    return `<tr><td>${label}</td><td>${g.length}</td><td>${exp.toFixed(1)}</td><td class="${act>exp?"pos":act<exp?"neg":""}">${act}</td></tr>`;
-  }).join("");
-  const expAll=rated.reduce((a,b)=>a+b.p,0),actAll=rated.filter(b=>b.result==="won").length;
-  $("t-calib").innerHTML=rated.length?rowsC+`<tr class="bestrow"><td>All</td><td>${rated.length}</td><td>${expAll.toFixed(1)}</td><td>${actAll}</td></tr>`
-    :'<tr><td colspan="4">No settled bets with an est. chance yet.</td></tr>';
-  $("t-calibnote").textContent=rated.length<50
+  // Est. chance vs results (real and practice bets; cash-outs and voids left out because they didn't run to the end)
+  const calibTable=(items,buckets,empty)=>{
+    const rows=buckets.map(([lo,hi,label])=>{
+      const g=items.filter(x=>x.p>=lo&&x.p<hi);
+      if(!g.length)return "";
+      const exp=g.reduce((a,x)=>a+x.p,0),act=g.filter(x=>x.won).length;
+      return `<tr><td>${label}</td><td>${g.length}</td><td>${exp.toFixed(1)}</td><td class="${act>exp?"pos":act<exp?"neg":""}">${act}</td></tr>`;
+    }).join("");
+    const exp=items.reduce((a,x)=>a+x.p,0),act=items.filter(x=>x.won).length;
+    return items.length?rows+`<tr class="bestrow"><td>All</td><td>${items.length}</td><td>${exp.toFixed(1)}</td><td>${act}</td></tr>`:`<tr><td colspan="4">${empty}</td></tr>`;
+  };
+  const rated=bets.filter(b=>(b.result==="won"||b.result==="lost")&&Number.isFinite(b.p)).map(b=>({p:b.p,won:b.result==="won"}));
+  $("t-calib").innerHTML=calibTable(rated,[[0,.3,"Under 30%"],[.3,.45,"30–45%"],[.45,.55,"45–55%"],[.55,.7,"55–70%"],[.7,1.01,"70% and over"]],"No settled bets with an est. chance yet.");
+  const nPrac=bets.filter(b=>b.practice&&(b.result==="won"||b.result==="lost")&&Number.isFinite(b.p)).length;
+  $("t-calibnote").textContent=(rated.length<50
     ?`${rated.length} of about 50 settled bets needed before this says much. Until then, the gap between expected and actual wins is mostly luck.`
-    :`If actual wins keep landing below expected, the estimates are too generous for the bets you pick. Above expected over many bets suggests you're finding real value.`;
+    :`If actual wins keep landing below expected, the estimates are too generous for the bets you pick. Above expected over many bets suggests you're finding real value.`)
+    +(nPrac?` Includes ${nPrac} practice bet${nPrac===1?"":"s"}.`:"");
+  const legItems=[];
+  bets.forEach(b=>(b.legs||[]).forEach(l=>{const r=legResult(b,l);if(Number.isFinite(l.p)&&(r==="won"||r==="lost"))legItems.push({p:l.p,won:r==="won"})}));
+  $("t-legcalib").innerHTML=calibTable(legItems,[[0,.5,"Under 50%"],[.5,.7,"50–70%"],[.7,.85,"70–85%"],[.85,1.01,"85% and over"]],"No settled legs with an est. chance yet.");
 
   // Challenges, newest first, active ones on top
   const order={active:0,stopped:1,complete:1,busted:1};
   const sorted=[...chs].sort((a,b)=>(order[ladder(a).state]-order[ladder(b).state])||String(b.createdAt).localeCompare(String(a.createdAt)));
   $("t-challenges").innerHTML=sorted.length?sorted.map(challengeHTML).join(""):'<p class="note">No challenges yet. Start one below: a starting stake, a target, and every win rolls into the next bet.</p>';
 
+  // Tag suggestions: the presets plus reasons used before
+  const presetTags=["Builder top pick","Builder other pick","Gut feel","Home favourite","Tipster","Chasing a loss"];
+  const tags=[...new Set([...presetTags,...bets.map(b=>b.tag).filter(Boolean)])];
+  $("t-tags").innerHTML=tags.map(t=>`<option value="${esc(t)}"></option>`).join("");
+
   // Challenge picker in the bet form: only challenges ready for their next step
   const sel=$("t-chsel"),keep=sel.value;
   const ready=chs.filter(c=>{const L=ladder(c);return L.state==="active"&&!L.pending});
   sel.innerHTML='<option value="">None</option>'+ready.map(c=>`<option value="${esc(c.id)}">${esc(c.name||"Challenge")}</option>`).join("");
   if(ready.some(c=>c.id===keep))sel.value=keep;
+  // Same list on the Multi builder, labelled with each bank so same-named challenges can be told apart
+  const bsel=$("b-ch"),bkeep=bsel.value;
+  bsel.innerHTML='<option value="">None</option>'+ready.map(c=>`<option value="${esc(c.id)}">${esc(c.name||"Challenge")} · bank ${money(ladder(c).bank)}</option>`).join("");
+  if(ready.some(c=>c.id===bkeep))bsel.value=bkeep;
 
   // Bookmaker suggestions
   const names=new Set([...Object.values(bookTitles),...bets.map(b=>b.book).filter(Boolean)]);
@@ -1193,17 +1303,28 @@ function renderTracker(){
   const log=[...bets].sort((a,b)=>String(b.date).localeCompare(String(a.date))||String(b.createdAt).localeCompare(String(a.createdAt)));
   $("t-log").innerHTML=log.length?log.map(b=>{
     const p=betPL(b),ch=b.challengeId?findCh(b.challengeId):null;
-    const sub=[b.book,ch&&!ch.deleted?ch.name:"",Number.isFinite(b.p)?"est. "+pct(b.p):""].filter(Boolean).map(esc).join(" · ");
+    const src=b.source&&b.source.from==="builder"?`builder pick ${b.source.rank} of ${b.source.of}`:b.source&&b.source.from==="multi"?"from Multi tab":"";
+    const sub=[b.book,ch&&!ch.deleted?ch.name:"",Number.isFinite(b.p)?"est. "+pct(b.p):"",b.tag,src].filter(Boolean).map(esc).join(" · ");
+    const badges=(b.practice?'<span class="tag prac">Practice</span>':"")+(b.betType==="boost"?'<span class="tag">Boost</span>':"")+(b.betType==="bonus"?'<span class="tag">Bonus bet</span>':"")+(b.settledBy==="legs"?'<span class="tag">Auto-settled</span>':"");
     const c=closeOf(b);
     const closeTxt=c?`<small>close ${odds(c.odds)} · <span class="${c.clv>0?"pos":c.clv<0?"neg":""}">${c.clv>0?"+":""}${pct(c.clv)}</span></small>`
       :(Array.isArray(b.legs)&&b.result==="pending"?"<small>close pending</small>":"");
+    const legs=Array.isArray(b.legs)&&b.legs.length?(()=>{
+      const done=b.legs.filter(l=>legResult(b,l)).length;
+      return `<details><summary>Legs (${done}/${b.legs.length} settled)</summary>${b.legs.map((l,j)=>{
+        const r=legResult(b,l),auto=legIsAuto(b,l);
+        return `<div class="legrow"><span>${esc(l.team||"")} @ ${odds(l.price)}${Number.isFinite(l.p)?` · est. ${pct(l.p)}`:""}</span>
+          <select data-leg="${esc(b.id)}" data-j="${j}" aria-label="Leg result">${[["","Not settled"],["won","Won"],["lost","Lost"],["void","Void"]].map(([v,t])=>`<option value="${v}"${(r||"")===v?" selected":""}>${t}${auto&&r===v?" (scores)":""}</option>`).join("")}</select></div>`;
+      }).join("")}</details>`;
+    })():"";
+    const cash=b.result==="cashout"?`<input class="cash" type="number" step="0.01" min="0" data-cash="${esc(b.id)}" placeholder="Amount $" aria-label="Cash-out amount" value="${Number.isFinite(b.cashout)?b.cashout:""}">`:"";
     return `<tr>
       <td>${esc(b.date||"")}</td>
-      <td>${esc(b.desc)}${sub?`<small>${sub}</small>`:""}</td>
+      <td>${badges}${esc(b.desc)}${sub?`<small>${sub}</small>`:""}${legs}</td>
       <td>${odds(b.odds)}${closeTxt}</td>
       <td>${money(b.stake)}</td>
-      <td><select data-res="${esc(b.id)}" aria-label="Result">${["pending","won","lost","void"].map(r=>`<option value="${r}"${b.result===r?" selected":""}>${resultName(r)}</option>`).join("")}</select></td>
-      <td class="${p>0?"pos":p<0?"neg":""}">${Number.isFinite(p)?(p>0?"+":"")+money(p):"–"}</td>
+      <td><select data-res="${esc(b.id)}" aria-label="Result">${["pending","won","lost","void","cashout"].map(r=>`<option value="${r}"${b.result===r?" selected":""}>${resultName(r)}</option>`).join("")}</select>${cash}</td>
+      <td class="${p>0?"pos":p<0?"neg":""}">${Number.isFinite(p)?(p>0?"+":"")+money(p):"–"}${b.practice&&Number.isFinite(p)?"<small>practice</small>":""}</td>
       <td><button class="del" type="button" data-del-bet="${esc(b.id)}">Delete</button></td>
     </tr>`;
   }).join(""):'<tr><td colspan="7">No bets logged yet.</td></tr>';
@@ -1217,9 +1338,32 @@ function armOrRun(btn,run){
 }
 
 $("t-log").addEventListener("change",e=>{
-  const s=e.target.closest("select[data-res]");if(!s)return;
-  const b=findBet(s.dataset.res);if(!b)return;
-  change(()=>{b.result=s.value;b.updatedAt=nowIso()});
+  const s=e.target.closest("select[data-res]");
+  if(s){
+    const b=findBet(s.dataset.res);if(!b)return;
+    change(()=>{b.result=s.value;delete b.settledBy;b.updatedAt=nowIso()});
+    if(s.value==="cashout"){const i=$("t-log").querySelector(`input[data-cash="${CSS.escape(b.id)}"]`);if(i)i.focus()}
+    return;
+  }
+  const lg=e.target.closest("select[data-leg]");
+  if(lg){
+    const b=findBet(lg.dataset.leg);if(!b||!b.legs)return;
+    const l=b.legs[+lg.dataset.j];if(!l)return;
+    change(()=>{
+      b.legResults={...(b.legResults||{})};
+      if(lg.value)b.legResults[legKey(l)]=lg.value;else delete b.legResults[legKey(l)];
+      b.updatedAt=nowIso();
+    });
+    applyLegResults();
+    return;
+  }
+  const c=e.target.closest("input[data-cash]");
+  if(c){
+    const b=findBet(c.dataset.cash);if(!b)return;
+    const v=num(c.value);
+    if(!(v>=0)){toast("Enter the amount you received for the cash-out.");return}
+    change(()=>{b.cashout=Math.round(v*100)/100;b.updatedAt=nowIso()});
+  }
 });
 $("t-log").addEventListener("click",e=>{
   const btn=e.target.closest("button[data-del-bet]");if(!btn)return;
@@ -1262,7 +1406,7 @@ function isFirstStep(b){
   const first=liveBets().filter(x=>x.challengeId===b.challengeId).sort((x,y)=>String(x.createdAt).localeCompare(String(y.createdAt)))[0];
   return !!first&&first.id===b.id;
 }
-function newMoney(b){return b.result==="void"?0:(!b.challengeId||isFirstStep(b))?b.stake:0}
+function newMoney(b){return b.practice||b.betType==="bonus"||b.result==="void"?0:(!b.challengeId||isFirstStep(b))?b.stake:0}
 function monthSpend(month=monthOf(todayStr())){return liveBets().filter(b=>monthOf(b.date)===month).reduce((a,b)=>a+newMoney(b),0)}
 
 // Going over the limit needs a second press of Log bet.
@@ -1273,7 +1417,7 @@ function resetLimitArm(){limitArmed=false;$("t-logbtn").textContent="Log bet"}
 // To log a different bet, use Unlink.
 $("t-linked").addEventListener("click",e=>{
   if(!e.target.closest("#t-unlink"))return;
-  pendingLegs=null;$("t-linked").hidden=true;
+  pendingLegs=null;pendingSource=null;$("t-linked").hidden=true;
   toast("Unlinked. This bet won't record an est. chance per leg or a closing price.");
 });
 
@@ -1284,7 +1428,9 @@ $("t-betform").addEventListener("submit",e=>{
   const pIn=$("t-p").value.trim(),p=pIn===""?NaN:num(pIn)/100;
   const problem=!desc?"Describe the bet.":!(o>1)?"Odds need to be above 1.00.":!(stake>0)?"Enter a stake.":(pIn!==""&&!(p>0&&p<1))?"Est. chance needs to be between 0 and 100.":"";
   if(problem){err.textContent=problem;err.hidden=false;return}
-  let fresh=stake;
+  const practice=$("t-practice").checked,betType=$("t-type").value;
+  if(practice&&chId){err.textContent="Practice bets can't be challenge steps. Untick Practice bet or set Challenge to None.";err.hidden=false;return}
+  let fresh=practice||betType==="bonus"?0:stake;
   if(chId){
     const ch=findCh(chId),L=ch&&ladder(ch);
     if(!L||L.state!=="active"||L.pending){err.textContent="That challenge isn't ready for another step.";err.hidden=false;return}
@@ -1305,6 +1451,10 @@ $("t-betform").addEventListener("submit",e=>{
   const t=nowIso();
   const bet={id:newId(),createdAt:t,updatedAt:t,date,desc,book:$("t-book").value.trim(),odds:o,stake,result:"pending"};
   if(chId)bet.challengeId=chId;
+  if(practice)bet.practice=true;
+  if(betType!=="normal")bet.betType=betType;
+  const tag=$("t-tag").value.trim();if(tag)bet.tag=tag;
+  if(pendingSource)bet.source=pendingSource;
   if(Number.isFinite(p))bet.p=Math.round(p*10000)/10000;
   if(pendingLegs)bet.legs=pendingLegs.map(l=>{
     const leg={sport:l.sport,eventId:l.eventId,team:l.team,start:l.start,price:l.price,bookKey:l.bookKey,p:l.p,match:l.match};
@@ -1312,9 +1462,9 @@ $("t-betform").addEventListener("submit",e=>{
     return leg;
   });
   change(()=>T.bets.push(bet));
-  $("t-desc").value="";$("t-odds").value="";$("t-p").value="";$("t-chsel").value="";
-  pendingLegs=null;$("t-linked").hidden=true;resetLimitArm();
-  toast("Bet logged. Set the result once it's settled.");
+  $("t-desc").value="";$("t-odds").value="";$("t-p").value="";$("t-chsel").value="";$("t-tag").value="";$("t-type").value="normal";$("t-practice").checked=false;
+  pendingLegs=null;pendingSource=null;$("t-linked").hidden=true;resetLimitArm();
+  toast(practice?"Practice bet logged. No money counted; it still feeds the est. chance tables.":"Bet logged. Set the result once it's settled.");
 });
 
 $("t-limitform").addEventListener("submit",e=>{
@@ -1334,24 +1484,32 @@ function exportBets(){
     const c=closeOf(b),ch=b.challengeId?findCh(b.challengeId):null,pl=betPL(b);
     const legs=(b.legs||[]).map(l=>{
       const cl=b.close&&b.close.legs&&b.close.legs[legKey(l)];
+      const res=legResult(b,l);
       return {match:l.match||"",selection:l.team||"",market:l.market||"h2h",sport:l.sport||"",start:l.start||"",price:l.price,
-        estChance:r4(l.p),bookmaker:l.bookKey||"",closePrice:cl?cl.price:null,closeFairChance:cl?r4(cl.fair):null};
+        estChance:r4(l.p),bookmaker:l.bookKey||"",closePrice:cl?cl.price:null,closeFairChance:cl?r4(cl.fair):null,
+        result:res,resultFrom:res?(legIsAuto(b,l)?"scores":"you"):null};
     });
     return {id:b.id,date:b.date||"",loggedAt:b.createdAt||"",description:b.desc,bookmaker:b.book||"",legCount:legs.length||null,
-      odds:b.odds,stake:b.stake,result:b.result,profitLoss:r2(pl),estChance:r4(b.p),evPer100:Number.isFinite(b.p)?r2((b.p*b.odds-1)*100):null,
+      practice:!!b.practice,betType:b.betType||"normal",reason:b.tag||"",
+      source:b.source?b.source.from:"manual",builderRank:b.source&&b.source.rank||null,builderOf:b.source&&b.source.of||null,builderSettings:b.source&&b.source.settings||null,
+      odds:b.odds,stake:b.stake,result:b.result,cashout:Number.isFinite(b.cashout)?b.cashout:null,settledBy:b.settledBy||"you",
+      profitLoss:r2(pl),estChance:r4(b.p),evPer100:Number.isFinite(b.p)?r2((b.p*b.odds-1)*100):null,
       closeOdds:c?r2(c.odds):null,vsClosePct:c?r2(c.clv*100):null,closeFairChance:c?r4(c.fair):null,
       challenge:ch&&!ch.deleted?ch.name:"",challengeStep:ch&&!ch.deleted?liveBets().filter(x=>x.challengeId===b.challengeId).sort((x,y)=>String(x.createdAt).localeCompare(String(y.createdAt))).findIndex(x=>x.id===b.id)+1:null,
       newMoney:r2(newMoney(b)),legs};
   });
 }
 function exportJson(){
-  const bets=exportBets(),settled=bets.filter(b=>b.result==="won"||b.result==="lost");
-  const staked=settled.reduce((a,b)=>a+b.stake,0),pl=settled.reduce((a,b)=>a+b.profitLoss,0);
+  const bets=exportBets(),real=bets.filter(b=>!b.practice),prac=bets.filter(b=>b.practice);
+  const settled=real.filter(b=>b.profitLoss!=null);
+  const staked=settled.reduce((a,b)=>a+(b.betType==="bonus"?0:b.stake),0),pl=settled.reduce((a,b)=>a+b.profitLoss,0);
+  const pracDone=prac.filter(b=>b.result==="won"||b.result==="lost");
   return JSON.stringify({
-    app:"Punter's Toolkit",format:1,exportedAt:new Date().toISOString(),
-    notes:"estChance and closeFairChance are 0-1 with the bookmaker margin removed. vsClosePct compares the odds taken with the closing odds. newMoney excludes rolled-over challenge winnings.",
-    summary:{bets:bets.length,settled:settled.length,won:settled.filter(b=>b.result==="won").length,pending:bets.filter(b=>b.result==="pending").length,
+    app:"Punter's Toolkit",format:2,exportedAt:new Date().toISOString(),
+    notes:"estChance and closeFairChance are 0-1 with the bookmaker margin removed. vsClosePct compares the odds taken with the closing odds. newMoney excludes rolled-over challenge winnings, bonus bets and practice bets. Summary money figures are real-money bets only; practice bets are summarised separately. Leg result 'scores' means settled automatically from final scores.",
+    summary:{bets:real.length,settled:settled.length,won:settled.filter(b=>b.result==="won").length,pending:real.filter(b=>b.result==="pending").length,
       staked:r2(staked),profitLoss:r2(pl),returnOnStakePct:staked>0?r2(pl/staked*100):null,monthlyLimit:num(T.settings.monthlyLimit)>0?num(T.settings.monthlyLimit):null},
+    practiceSummary:{bets:prac.length,settled:pracDone.length,won:pracDone.filter(b=>b.result==="won").length,notionalProfitLoss:r2(pracDone.reduce((a,b)=>a+b.profitLoss,0))},
     bets,
     challenges:liveChallenges().map(ch=>{const L=ladder(ch);return {name:ch.name,start:ch.start,target:ch.target,state:L.state,bank:L.bank,steps:L.rows.length,startedAt:ch.createdAt}})
   },null,2);
@@ -1363,11 +1521,12 @@ function csvCell(v){
   return /[",\r\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s;
 }
 function exportCsv(){
-  const cols=[["date","Date"],["description","Bet"],["bookmaker","Bookmaker"],["legCount","Legs"],["odds","Odds"],["stake","Stake"],["result","Result"],["profitLoss","Profit/loss"],
+  const cols=[["date","Date"],["description","Bet"],["practice","Practice"],["betType","Bet type"],["reason","Reason"],["sourceText","Source"],["bookmaker","Bookmaker"],["legCount","Legs"],["odds","Odds"],["stake","Stake"],["result","Result"],["cashout","Cash-out"],["profitLoss","Profit/loss"],
     ["estChance","Est. chance"],["evPer100","EV per $100"],["closeOdds","Closing odds"],["vsClosePct","Vs close %"],["closeFairChance","Closing fair chance"],["challenge","Challenge"],["challengeStep","Step"],["newMoney","New money"],["legDetail","Leg details"],["loggedAt","Logged at"]];
-  const rows=exportBets().map(b=>({...b,
+  const rows=exportBets().map(b=>({...b,practice:b.practice?"yes":"",
+    sourceText:b.source==="builder"?`Builder pick ${b.builderRank} of ${b.builderOf}`:b.source==="multi"?"Multi tab":"Manual",
     estChance:b.estChance!=null?r2(b.estChance*100)+"%":"",closeFairChance:b.closeFairChance!=null?r2(b.closeFairChance*100)+"%":"",
-    legDetail:b.legs.map(l=>`${l.match}: ${l.selection} @ ${l.price}${l.estChance!=null?` (est ${r2(l.estChance*100)}%)`:""}${l.closePrice?` close ${l.closePrice}`:""}`).join(" | ")}));
+    legDetail:b.legs.map(l=>`${l.match}: ${l.selection} @ ${l.price}${l.estChance!=null?` (est ${r2(l.estChance*100)}%)`:""}${l.closePrice?` close ${l.closePrice}`:""}${l.result?` ${l.result}`:""}`).join(" | ")}));
   return "﻿"+[cols.map(c=>c[1]).join(","),...rows.map(r=>cols.map(([k])=>csvCell(r[k])).join(","))].join("\r\n");
 }
 function downloadText(name,text,type){
@@ -1418,12 +1577,13 @@ $("m-log").addEventListener("click",()=>{
   const p=ps.every(x=>x>0&&x<=1)?ps.reduce((a,x)=>a*x,1):NaN;
   // Only link closing prices when every leg came from live odds at the price shown.
   const linked=legs.every(l=>l.meta&&Math.abs(num(l.odds)-l.meta.price)<0.005);
-  prefillBet({desc:legs.map(l=>l.name||"Leg").join(" + "),odds:O,stake:num($("m-stake").value),p,legs:linked?legs.map(l=>l.meta):null});
+  prefillBet({source:{from:"multi"},desc:legs.map(l=>l.name||"Leg").join(" + "),odds:O,stake:num($("m-stake").value),p,legs:linked?legs.map(l=>l.meta):null});
 });
 
 $("t-date").value=todayStr();
 fillMarketPicker();
 renderTracker();
+applyLegResults();
 window.trackerReady=true;
 sync();
 
