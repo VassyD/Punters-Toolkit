@@ -70,6 +70,13 @@ td:first-child{font-family:var(--f-body)}
 .seg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--line);border-radius:5px;overflow:hidden;max-width:100%}
 .seg button{font-family:var(--f-display);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:.95rem;border:0;background:transparent;color:var(--muted);padding:7px 16px;cursor:pointer}
 .seg button[aria-pressed="true"]{background:var(--board);color:var(--board-ink)}
+/* Automatic job status and credits */
+.autostatus{display:grid;gap:4px;padding:10px 12px;border:1px solid var(--line);border-radius:6px;background:var(--bg);font-size:.86rem}
+.autostatus b{font-family:var(--f-display);font-weight:600;letter-spacing:.05em;text-transform:uppercase;font-size:.8rem;color:var(--muted)}
+.autostatus.stale,.credits.low{border-color:var(--bad);background:color-mix(in srgb,var(--bad) 8%,var(--bg))}
+.autostatus .bad,.credits .bad{color:var(--bad);font-weight:600}
+.credits{margin:0;padding:8px 12px;border:1px solid var(--line);border-radius:6px;font-size:.86rem;font-variant-numeric:tabular-nums}
+.sharewarn{color:var(--bad);font-weight:600}
 /* Tracker */
 h2.sub{font-family:var(--f-display);font-weight:700;font-size:1.3rem;letter-spacing:.04em;text-transform:uppercase;margin:6px 0 -6px}
 .grid > button{align-self:end;height:40px}
@@ -166,6 +173,7 @@ footer strong{color:var(--ink)}
       <button class="btn" type="button" id="l-refresh">Refresh</button>
       <span id="l-status" aria-live="polite"></span>
     </div>
+    <p class="credits" id="l-credits" hidden></p>
     <form id="l-login" class="grid" hidden>
       <p class="note span">Enter your passcode to load odds. It's the one you set with <code>wrangler secret put TRACKER_TOKEN</code>. Each device only asks once.</p>
       <label>Passcode<input id="l-pass" type="password" autocomplete="current-password"></label>
@@ -226,6 +234,7 @@ footer strong{color:var(--ink)}
       <span id="t-sync" aria-live="polite"></span>
       <button class="btn" type="button" id="t-syncnow">Sync now</button>
     </div>
+    <div class="autostatus" id="t-auto" aria-live="polite" hidden></div>
     <form id="t-login" class="grid" hidden>
       <p class="note span">Enter the tracker passcode you set on the Worker. Each device only asks once.</p>
       <label>Passcode<input id="t-pass" type="password" autocomplete="current-password"></label>
@@ -612,6 +621,12 @@ const PLAYER_MARKETS={
 const MARKET_UNITS={player_points:"points",player_rebounds:"rebounds",player_assists:"assists",player_disposals:"disposals",player_disposals_over:"disposals",player_goals_scored_over:"goals",player_marks_over:"marks",player_try_scorer_over:"tries"};
 let liveMarket="h2h",lastQuota=null,eventsList=null;
 const propsData=new Map(); // "eventId|market" -> one match's player market
+// Loaded player markets are kept on this device until each game starts, so a reload doesn't cost credits again.
+const PROPS_KEY="pt-props";
+function saveProps(){
+  try{const now=Date.now();localStorage.setItem(PROPS_KEY,JSON.stringify([...propsData].filter(([,d])=>Date.parse(d.start)>now)))}catch(e){}
+}
+try{const now=Date.now();(JSON.parse(localStorage.getItem(PROPS_KEY)||"[]")||[]).forEach(([k,d])=>{if(d&&Array.isArray(d.books)&&Date.parse(d.start)>now)propsData.set(k,d)})}catch(e){}
 const marketName=m=>m==="h2h"?"Head-to-head":Object.values(PLAYER_MARKETS).map(x=>x[m]).find(Boolean)||m;
 function fillMarketPicker(){
   const ms=PLAYER_MARKETS[liveSport]||{};
@@ -629,7 +644,7 @@ async function api(path){
   const d=await r.json().catch(()=>({}));
   if(r.status===401){clearToken();throw new Error("the passcode was wrong. Enter it again.")}
   if(!r.ok)throw new Error(d.error||"the odds service returned status "+r.status);
-  if(d.quota&&d.quota.remaining!=null)lastQuota=d.quota.remaining;
+  if(!path.startsWith("/status"))updateQuotaFrom(d);
   return d;
 }
 
@@ -716,17 +731,22 @@ function playerMatchHTML(ev){
       <thead><tr><th>Selection</th>${books.map(b=>`<th class="${b.key===SB?"sbcol":""}">${esc(b.title)}</th>`).join("")}<th>Est. chance</th><th><span class="sr">Add</span></th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
-    <div class="match-foot"><span class="lineinfo">${anyRough?"~ means only one side is priced, so the margin can't be removed and the chance reads a few points high. ":""}+ adds the selection to your multi at ${esc(homeName())}'s price, or the best price if ${esc(homeName())} doesn't offer it.</span></div>
+    <div class="match-foot"><span class="lineinfo">${pm.fetchedAt?`Prices from ${agoText(pm.fetchedAt)}. `:""}${anyRough?"~ means only one side is priced, so the margin can't be removed and the chance reads a few points high. ":""}+ adds the selection to your multi at ${esc(homeName())}'s price, or the best price if ${esc(homeName())} doesn't offer it.</span>
+      <button class="btn" type="button" data-act="loadprops" data-ev="${esc(ev.id)}">Refresh prices (1 credit)</button></div>
   </article>`;
 }
 
 async function loadProps(evId,btn){
+  // Low on credits: ask for a second tap before spending one.
+  const c=creditInfo();
+  if(c&&c.remaining<=0){$("l-status").textContent="No API credits left. Player markets can't load until your allowance resets.";return}
+  if(c&&c.remaining<LOW_CREDITS&&btn.dataset.armed!=="1"){btn.dataset.armed="1";btn.textContent=`Only ${c.remaining} credits left. Tap again to load (1 credit)`;return}
   btn.disabled=true;btn.textContent="Loading…";
   try{
     const d=await api(`/props?sport=${liveSport}&event=${encodeURIComponent(evId)}&market=${liveMarket}`);
     const ev=(eventsList&&eventsList.events.find(e=>e.id===evId))||{};
     d.sport=liveSport;d.id=d.id||evId;d.home=d.home||ev.home;d.away=d.away||ev.away;d.start=d.start||ev.start;d.books=d.books||[];
-    propsData.set(evId+"|"+liveMarket,d);
+    propsData.set(evId+"|"+liveMarket,d);saveProps();
     fillBookPicker();renderPlayerView();renderBuilder();
   }catch(e){
     btn.disabled=false;btn.textContent="Try again";
@@ -761,7 +781,7 @@ async function loadLive(){
     const d=await r.json().catch(()=>({}));
     if(r.status===401){clearToken();throw new Error("the passcode was wrong. Enter it again.")}
     if(!r.ok)throw new Error(d.error||"the odds service returned status "+r.status);
-    liveData=d; renderLive();
+    liveData=d; renderLive(); updateQuotaFrom(d); loadStatus();
   }catch(e){
     status.textContent="Couldn't load odds: "+e.message;
   }
@@ -974,7 +994,7 @@ function renderBuilder(){
       <tbody>${m.legs.map(l=>`<tr><td>${esc(l.label)}</td><td>${esc(l.match)}</td><td>${odds(l.price)}</td><td>${esc(l.book)}</td><td>${l.rough?"~"+pct(l.implied):pct(l.p)}</td></tr>`).join("")}</tbody>
     </table></div>
     <div class="match-foot">
-      <span class="lineinfo">$${stake.toLocaleString("en-AU")} returns ${money(m.odds*stake)} if every leg wins.</span>
+      <span class="lineinfo">$${stake.toLocaleString("en-AU")} returns ${money(m.odds*stake)} if every leg wins.${(()=>{const sh=sharedGames(m.legs.map(l=>l.meta));return sh.length?` <span class="sharewarn">You already have a pending bet on ${esc(sh.map(g=>g.match).join(" and "))}.</span>`:""})()}</span>
       <button class="btn" type="button" data-build="${i}">Load into Multi</button>
       <button class="btn" type="button" data-logbuild="${i}" data-practice="1">Log as practice</button>
       <button class="btn solid" type="button" data-logbuild="${i}">Log this bet</button>
@@ -1127,9 +1147,72 @@ async function sync(){
     if(rev===sentRev)dirty=false;else syncTimer=setTimeout(sync,800);
     saveLocal();renderTracker();applyLegResults();
     setSync("Synced at "+new Date().toLocaleTimeString("en-AU",{hour:"numeric",minute:"2-digit"}));
+    loadStatus();
   }catch(e){
     setSync((dirty?"Saved on this device but not synced: ":"Couldn't sync: ")+(e.message||"no connection"));
   }finally{syncing=false}
+}
+
+// ---- Automatic job status and credits ----
+let statusData=null,statusAt=0;
+const LOW_CREDITS=25;
+async function loadStatus(force){
+  if(!token||!ODDS_ENDPOINT)return;
+  if(!force&&statusData&&!statusData.error&&Date.now()-statusAt<60000){renderStatus();return}
+  try{statusData=await api("/status");statusAt=Date.now()}
+  catch(e){statusData={error:e.message}}
+  renderStatus();
+}
+// Keep the credit meter current from any odds reply, between status loads.
+function updateQuotaFrom(d){
+  if(!d||!d.quota||d.quota.remaining==null||d.quota.remaining==="")return;
+  lastQuota=d.quota.remaining;
+  if(statusData&&!statusData.error){statusData.quota={remaining:+d.quota.remaining,used:+d.quota.used,at:new Date().toISOString()};renderStatus()}
+}
+function agoText(iso){const m=Math.round((Date.now()-Date.parse(iso))/60000);return m<1?"just now":m<60?`${m} min ago`:m<1440?`${Math.round(m/60)} hr ago`:`${Math.round(m/1440)} days ago`}
+function clockText(iso){return new Date(iso).toLocaleString("en-AU",{weekday:"short",hour:"numeric",minute:"2-digit"})}
+function creditInfo(){
+  const q=statusData&&!statusData.error&&statusData.quota;if(!q)return null;
+  const since=statusData.since;let rate=null;
+  if(since){const days=(Date.parse(q.at)-Date.parse(since.at))/86400000;if(days>=0.5)rate=Math.max(0,(q.used-since.used)/days)}
+  return {remaining:q.remaining,rate,lastsDays:rate>0?q.remaining/rate:null,low:q.remaining<LOW_CREDITS};
+}
+function creditsText(c){
+  const parts=[`<strong>${c.remaining}</strong> API credits left`];
+  parts.push(c.rate==null?"usage rate shows after about half a day":`using about ${c.rate<1?c.rate.toFixed(1):Math.round(c.rate)} a day`);
+  if(c.lastsDays!=null)parts.push(c.lastsDays>=60?"enough for 2+ months at this rate":`lasts about ${Math.max(1,Math.floor(c.lastsDays))} day${Math.floor(c.lastsDays)===1?"":"s"} at this rate`);
+  return parts.join(" · ")+(c.low?` · <span class="bad">Running low. At 0, odds, closing prices and auto-settling all stop until your allowance resets.</span>`:"");
+}
+function renderStatus(){
+  const box=$("t-auto"),cr=$("l-credits");
+  if(!statusData){box.hidden=true;cr.hidden=true;return}
+  if(statusData.error){box.hidden=false;box.className="autostatus";box.innerHTML=`<b>Automatic checks</b><span>Couldn't load the status: ${esc(statusData.error)}</span>`;cr.hidden=true;return}
+  const j=statusData.jobs||{},c=creditInfo();
+  const stale=!j.lastRun||(Date.now()-Date.parse(j.lastRun))>25*60000;
+  const lines=[];
+  if(!j.lastRun)lines.push(`<span class="bad">The automatic job hasn't run yet.</span> It should start within 10 minutes of deploying the Worker. If this message stays, run npx wrangler deploy again and check the output lists the */10 schedule.`);
+  else if(stale)lines.push(`<span class="bad">Last ran ${agoText(j.lastRun)}. It normally runs every 10 minutes, so closing prices and auto-settling are paused.</span> Run npx wrangler deploy again and check the output lists the */10 schedule.`);
+  else lines.push(`Running normally: last check ${agoText(j.lastRun)}, every 10 minutes.`);
+  lines.push(`Closing prices: ${j.lastClosing?`last recorded ${clockText(j.lastClosing.at)} (${j.lastClosing.legs} leg${j.lastClosing.legs===1?"":"s"})`:"none recorded yet"}.`);
+  lines.push(j.autoSettle===false?"Auto-settling from scores is switched off.":`Auto-settling: ${j.lastSettle?`last settled ${clockText(j.lastSettle.at)} (${j.lastSettle.legs} leg${j.lastSettle.legs===1?"":"s"})`:"nothing settled yet"}.`);
+  if(j.lastError&&Date.parse(j.lastError.at)>=Date.parse(j.lastRun||0))lines.push(`<span class="bad">The last check hit an error: ${esc(j.lastError.message)}</span>`);
+  if(c)lines.push(creditsText(c));
+  box.hidden=false;box.className="autostatus"+(stale||(c&&c.low)?" stale":"");
+  box.innerHTML=`<b>Automatic checks</b>`+lines.map(l=>`<span>${l}</span>`).join("");
+  cr.hidden=!c;if(c){cr.className="credits"+(c.low?" low":"");cr.innerHTML=creditsText(c)}
+}
+
+// ---- Games you already have money on ----
+// Real-money pending bets, grouped by match, so a new bet on the same game can be flagged.
+function sharedGames(legs,excludeId){
+  const pend=new Map();
+  liveBets().forEach(b=>{
+    if(b.practice||b.result!=="pending"||b.id===excludeId)return;
+    (b.legs||[]).forEach(l=>{if(!pend.has(l.eventId))pend.set(l.eventId,{match:l.match||"",bets:[]});const g=pend.get(l.eventId);if(!g.bets.includes(b.desc))g.bets.push(b.desc)});
+  });
+  const out=[];
+  (legs||[]).forEach(l=>{const g=l&&pend.get(l.eventId);if(g&&!out.some(x=>x.eventId===l.eventId))out.push({eventId:l.eventId,match:l.match||g.match,bets:g.bets})});
+  return out;
 }
 
 // Ladder: every settled step changes the bank by that bet's profit or loss.
@@ -1410,8 +1493,8 @@ function newMoney(b){return b.practice||b.betType==="bonus"||b.result==="void"?0
 function monthSpend(month=monthOf(todayStr())){return liveBets().filter(b=>monthOf(b.date)===month).reduce((a,b)=>a+newMoney(b),0)}
 
 // Going over the limit needs a second press of Log bet.
-let limitArmed=false;
-function resetLimitArm(){limitArmed=false;$("t-logbtn").textContent="Log bet"}
+let limitArmed=false,sharedArmed=false;
+function resetLimitArm(){limitArmed=false;sharedArmed=false;$("t-logbtn").textContent="Log bet"}
 ["t-desc","t-odds","t-stake","t-date","t-chsel"].forEach(id=>$(id).addEventListener("input",resetLimitArm));
 // Editing the description or odds keeps the market link: the price you actually get often differs a little from the feed.
 // To log a different bet, use Unlink.
@@ -1444,6 +1527,15 @@ $("t-betform").addEventListener("submit",e=>{
     if(after>lim+0.005&&!limitArmed){
       limitArmed=true;$("t-logbtn").textContent="Log anyway";
       err.textContent=`This takes ${monthOf(date)===monthOf(todayStr())?"this month":"that month"} to ${money(after)}, over your ${money(lim)} limit. Press Log anyway if you still want to log it.`;
+      err.hidden=false;return;
+    }
+  }
+  // A second real-money bet on a game you already have money on: one result can decide both.
+  if(!practice&&pendingLegs&&!sharedArmed){
+    const sh=sharedGames(pendingLegs);
+    if(sh.length){
+      sharedArmed=true;$("t-logbtn").textContent="Log anyway";
+      err.textContent=`You already have a pending bet on ${sh.map(g=>g.match||"this game").join(" and ")}: ${sh.flatMap(g=>g.bets).map(d=>`"${d}"`).join(", ")}. If the same result loses both, one game decides both bets. Press Log anyway to log it.`;
       err.hidden=false;return;
     }
   }
