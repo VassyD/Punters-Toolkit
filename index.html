@@ -273,6 +273,10 @@ footer strong{color:var(--ink)}
     </div>
     <p id="b-status" class="note"></p>
     <div class="matches" id="b-list"></div>
+    <div class="live-bar" id="b-more" hidden>
+      <button class="btn" type="button" id="b-more10">Show 10 more</button>
+      <button class="btn" type="button" id="b-moreall">Show all</button>
+    </div>
     <p class="note">A multi only pays when every leg wins, and each leg carries a bookmaker margin, so more legs means more margin against you. That's why singles near your target usually rank highest. A 2.00 price implies a 50% chance; after margins the real chance is usually a bit lower, which is the negative EV you'll see on most options. The estimate assumes legs from different matches are independent.</p>
   </section>
 
@@ -1007,7 +1011,11 @@ function buildMultis(cands,{target,tol,minLegs,maxLegs}){
 }
 
 let builderResults=[];
+// How many results are on screen. Goes back to 8 when you change a setting.
+const BUILDER_FIRST=8;
+let builderLimit=BUILDER_FIRST;
 function renderBuilder(){
+  $("b-more").hidden=true;
   const status=$("b-status"),list=$("b-list");
   const target=num($("b-target").value),stake=num($("b-stake").value)||0;
   $("b-ret").textContent=target>1?money(target*stake):"–";
@@ -1026,10 +1034,10 @@ function renderBuilder(){
   builderResults=buildMultis(cands,{target,tol:num($("b-tol").value),minLegs,maxLegs});
   $("b-count").textContent=builderResults.length;
   $("b-best").textContent=builderResults.length&&Number.isFinite(builderResults[0].p)?pct(builderResults[0].p):"–";
-  const shown=builderResults.slice(0,8);
+  const shown=builderResults.slice(0,builderLimit);
   const using=[useH2h?`${sportName(liveData.sport)} head-to-head`:"",useProps?`player markets from ${propCount} match${propCount===1?"":"es"}`:""].filter(Boolean).join(" and ");
   status.textContent=builderResults.length
-    ?`Using ${using}. Showing ${shown.length} of ${builderResults.length}, best estimated chance first.`
+    ?`Using ${using}. Showing ${shown.length===builderResults.length?"all":`${shown.length} of`} ${builderResults.length}, best estimated chance first.`
     :`Nothing from ${using} lands within range of ${odds(target)}. Try a wider range, more legs, or best available prices.`;
   list.innerHTML=shown.map((m,i)=>`<article class="match">
     <div class="match-head">
@@ -1049,8 +1057,13 @@ function renderBuilder(){
       <button class="btn solid" type="button" data-logbuild="${i}">Log this bet</button>
     </div>
   </article>`).join("");
+  const left=builderResults.length-shown.length;
+  $("b-more").hidden=left<=0;
+  if(left>0){$("b-more10").textContent=`Show ${Math.min(10,left)} more`;$("b-moreall").textContent=`Show all ${builderResults.length}`}
 }
-["b-target","b-tol","b-legs","b-src","b-pool","b-stake"].forEach(id=>$(id).addEventListener("input",renderBuilder));
+["b-target","b-tol","b-legs","b-src","b-pool","b-stake"].forEach(id=>$(id).addEventListener("input",()=>{builderLimit=BUILDER_FIRST;renderBuilder()}));
+$("b-more10").addEventListener("click",()=>{builderLimit+=10;renderBuilder()});
+$("b-moreall").addEventListener("click",()=>{builderLimit=Infinity;renderBuilder()});
 // Picking a challenge stakes the whole bank, like every challenge step.
 $("b-ch").addEventListener("change",()=>{
   const ch=findCh($("b-ch").value);
