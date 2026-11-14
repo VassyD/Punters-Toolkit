@@ -115,6 +115,8 @@ details[open] > summary{margin-bottom:12px}
 #t-log .pos,.ladder td.pos{color:var(--good)} #t-log .neg,.ladder td.neg{color:var(--bad)}
 .del{border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:4px;padding:3px 8px;cursor:pointer;font-size:.8rem;white-space:nowrap}
 .del.armed{border-color:var(--bad);color:var(--bad)}
+#t-log td:last-child{white-space:nowrap}
+#t-log tr.editing td{background:var(--bg);padding:12px}
 label.inline{display:flex;align-items:center;gap:8px}
 label.inline input[type="checkbox"]{width:auto;padding:0;accent-color:var(--turf)}
 .board b.warn{color:#ffb4a8}
@@ -1567,6 +1569,7 @@ function renderTracker(){
   // Bet log, newest first
   const log=[...bets].sort((a,b)=>String(b.date).localeCompare(String(a.date))||String(b.createdAt).localeCompare(String(a.createdAt)));
   $("t-log").innerHTML=log.length?log.map(b=>{
+    if(b.id===editId&&editDraft)return editRowHTML(b);
     const p=betPL(b),ch=b.challengeId?findCh(b.challengeId):null;
     const src=b.source&&b.source.from==="builder"?`builder pick ${b.source.rank} of ${b.source.of}`:b.source&&b.source.from==="multi"?"from Multi tab":b.source&&b.source.from==="value"?`value finder, edge +${pct(b.source.edge)}`:"";
     const sub=[b.book,ch&&!ch.deleted?ch.name:"",Number.isFinite(b.p)?"est. "+pct(b.p):"",b.tag,src].filter(Boolean).map(esc).join(" · ");
@@ -1590,10 +1593,72 @@ function renderTracker(){
       <td>${money(b.stake)}</td>
       <td><select data-res="${esc(b.id)}" aria-label="Result">${["pending","won","lost","void","cashout"].map(r=>`<option value="${r}"${b.result===r?" selected":""}>${resultName(r)}</option>`).join("")}</select>${cash}</td>
       <td class="${p>0?"pos":p<0?"neg":""}">${Number.isFinite(p)?(p>0?"+":"")+money(p):"–"}${b.practice&&Number.isFinite(p)?"<small>practice</small>":""}</td>
-      <td><button class="del" type="button" data-del-bet="${esc(b.id)}">Delete</button></td>
+      <td><button class="del" type="button" data-edit-bet="${esc(b.id)}">Edit</button> <button class="del" type="button" data-del-bet="${esc(b.id)}">Delete</button></td>
     </tr>`;
   }).join(""):'<tr><td colspan="7">No bets logged yet.</td></tr>';
 }
+
+// ---- Editing a logged bet ----
+// The draft holds what's typed, so a sync that redraws the log doesn't lose it.
+let editId=null,editDraft=null;
+function editRowHTML(b){
+  const d=editDraft,inCh=!!b.challengeId,ch=inCh?findCh(b.challengeId):null;
+  const types=[["normal","Normal"],["boost","Boosted odds"],["bonus","Bonus bet"]];
+  return `<tr class="editing"><td colspan="7">
+    <form class="grid" id="t-editform" data-bet="${esc(b.id)}">
+      <label class="span">Bet<input id="e-desc" data-ef="desc" type="text" class="name" value="${esc(d.desc)}"></label>
+      <label>Date<input id="e-date" data-ef="date" type="date" value="${esc(d.date)}"></label>
+      <label>Bookmaker<input id="e-book" data-ef="book" type="text" class="name" list="t-books" value="${esc(d.book)}"></label>
+      <label>Odds<input id="e-odds" data-ef="odds" type="number" step="0.01" min="1.01" value="${esc(d.odds)}"></label>
+      <label>Stake $<input id="e-stake" data-ef="stake" type="number" step="0.01" min="0.01" value="${esc(d.stake)}"></label>
+      <label>Est. chance %<input id="e-p" data-ef="p" type="number" step="0.1" min="0" max="100" placeholder="optional" value="${esc(d.p)}"></label>
+      <label>Bet type<select id="e-type" data-ef="betType">${types.map(([v,t])=>`<option value="${v}"${d.betType===v?" selected":""}>${t}</option>`).join("")}</select></label>
+      <label>Reason<input id="e-tag" data-ef="tag" type="text" class="name" list="t-tags" value="${esc(d.tag)}"></label>
+      <label class="inline span" for="e-practice"><input id="e-practice" data-ef="practice" type="checkbox"${d.practice?" checked":""}${inCh?" disabled":""}> Practice bet${inCh?" (not available for challenge steps)":""}</label>
+      ${inCh?`<p class="note span">This is a step in "${esc(ch&&!ch.deleted?ch.name:"a deleted challenge")}". Changing the stake or odds recalculates the challenge bank from this step on.</p>`:""}
+      <p class="note err span" id="t-editerr" hidden></p>
+      <button class="btn solid" type="submit">Save changes</button>
+      <button class="btn" type="button" data-edit-cancel>Cancel</button>
+    </form>
+  </td></tr>`;
+}
+// What the challenge bank was just before this bet, to stop a stake larger than the bank.
+function bankBefore(b){
+  const ch=b.challengeId&&findCh(b.challengeId);if(!ch||ch.deleted)return null;
+  const rows=ladder(ch).rows,i=rows.findIndex(r=>r.b.id===b.id);
+  if(i<0)return null;
+  if(i===0)return ch.start;
+  return rows[i-1].after;
+}
+$("t-log").addEventListener("input",e=>{
+  const f=e.target.closest("[data-ef]");if(!f||!editDraft)return;
+  editDraft[f.dataset.ef]=f.type==="checkbox"?f.checked:f.value;
+});
+$("t-log").addEventListener("submit",e=>{
+  const form=e.target.closest("#t-editform");if(!form)return;
+  e.preventDefault();
+  const b=findBet(form.dataset.bet),d=editDraft,err=$("t-editerr");if(!b||!d)return;
+  const o=num(d.odds),stake=num(d.stake),pIn=String(d.p).trim(),p=pIn===""?NaN:num(pIn)/100;
+  let problem=!String(d.desc).trim()?"Describe the bet.":!(o>1)?"Odds need to be above 1.00.":!(stake>0)?"Enter a stake.":(pIn!==""&&!(p>0&&p<1))?"Est. chance needs to be between 0 and 100.":!/^\d{4}-\d{2}-\d{2}$/.test(d.date)?"Choose a date.":"";
+  if(!problem&&b.challengeId){
+    const before=bankBefore(b);
+    if(before!=null&&stake>before+0.005)problem=`The stake can't be more than the challenge bank at this step (${money(before)}).`;
+  }
+  if(problem){err.textContent=problem;err.hidden=false;return}
+  const was={stake:b.stake,odds:b.odds};
+  change(()=>{
+    b.desc=String(d.desc).trim();b.date=d.date;b.book=String(d.book).trim();
+    b.odds=Math.round(o*100)/100;b.stake=Math.round(stake*100)/100;
+    if(Number.isFinite(p))b.p=Math.round(p*10000)/10000;else delete b.p;
+    if(d.betType&&d.betType!=="normal")b.betType=d.betType;else delete b.betType;
+    const tag=String(d.tag).trim();if(tag)b.tag=tag;else delete b.tag;
+    if(!b.challengeId&&d.practice)b.practice=true;else delete b.practice;
+    b.updatedAt=nowIso();
+    editId=null;editDraft=null;
+  });
+  const changed=[was.stake!==b.stake?`stake ${money(was.stake)} → ${money(b.stake)}`:"",was.odds!==b.odds?`odds ${odds(was.odds)} → ${odds(b.odds)}`:""].filter(Boolean).join(", ");
+  toast(changed?`Bet updated: ${changed}.`:"Bet updated.");
+});
 
 // Two-tap delete so nothing goes with one stray tap
 function armOrRun(btn,run){
@@ -1631,6 +1696,17 @@ $("t-log").addEventListener("change",e=>{
   }
 });
 $("t-log").addEventListener("click",e=>{
+  const ed=e.target.closest("button[data-edit-bet]");
+  if(ed){
+    const b=findBet(ed.dataset.editBet);if(!b)return;
+    editId=b.id;
+    editDraft={desc:b.desc||"",date:b.date||todayStr(),book:b.book||"",odds:String(b.odds),stake:String(b.stake),
+      p:Number.isFinite(b.p)?(b.p*100).toFixed(1):"",betType:b.betType||"normal",tag:b.tag||"",practice:!!b.practice};
+    renderTracker();
+    const s=$("e-stake");if(s){s.focus();s.select()}
+    return;
+  }
+  if(e.target.closest("button[data-edit-cancel]")){editId=null;editDraft=null;renderTracker();return}
   const btn=e.target.closest("button[data-del-bet]");if(!btn)return;
   armOrRun(btn,()=>{const b=findBet(btn.dataset.delBet);if(b)change(()=>{b.deleted=true;b.updatedAt=nowIso()})});
 });
