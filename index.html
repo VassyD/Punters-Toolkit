@@ -179,6 +179,7 @@ footer strong{color:var(--ink)}
         <button type="button" data-sport="aleague" aria-pressed="false">A-League</button>
         <button type="button" data-sport="bbl" aria-pressed="false">BBL</button>
         <button type="button" data-sport="mlb" aria-pressed="false">MLB</button>
+        <button type="button" data-sport="nfl" aria-pressed="false">NFL</button>
       </div>
       <label class="inline" for="l-book">Your bookmaker <select id="l-book"></select></label>
       <label class="inline" for="l-market">Market <select id="l-market"><option value="h2h">Head-to-head</option></select></label>
@@ -202,7 +203,7 @@ footer strong{color:var(--ink)}
       <label>Competition
         <select id="vf-sport">
           <option value="afl">AFL</option><option value="nrl">NRL</option><option value="nba">NBA</option>
-          <option value="aleague">A-League</option><option value="bbl">BBL</option><option value="mlb">MLB</option>
+          <option value="aleague">A-League</option><option value="bbl">BBL</option><option value="mlb">MLB</option><option value="nfl">NFL</option>
         </select>
       </label>
       <button class="btn solid" type="button" id="vf-scan">Scan head-to-head (1 credit)</button>
@@ -650,7 +651,7 @@ $("c-type").addEventListener("change",()=>{$("c-in").value={dec:"2.50",frac:"6/4
 
 /* Live odds */
 let liveSport="afl", liveData=null;
-const SPORT_NAMES={afl:"AFL",nrl:"NRL",nba:"NBA",aleague:"A-League",bbl:"BBL",mlb:"MLB"};
+const SPORT_NAMES={afl:"AFL",nrl:"NRL",nba:"NBA",aleague:"A-League",bbl:"BBL",mlb:"MLB",nfl:"NFL"};
 const sportName=k=>SPORT_NAMES[k]||String(k).toUpperCase();
 const sportBtns=[...document.querySelectorAll("[data-sport]")];
 sportBtns.forEach(b=>b.addEventListener("click",()=>{
@@ -1259,7 +1260,8 @@ function withCloses(win,lose){
 function newerOf(a,b){
   const okA=a&&typeof a==="object",okB=b&&typeof b==="object";
   if(!okB)return okA?a:{};
-  if(!okA)return b;
+  // Settings that were never saved here (a fresh sign-in) never win over saved ones.
+  if(!okA||!a.updatedAt)return b;
   return String(b.updatedAt||"")>String(a.updatedAt||"")?b:a;
 }
 
@@ -1363,7 +1365,7 @@ function creditInfo(){
 function creditsText(c){
   const parts=[`<strong>${c.remaining}</strong> API credits left`];
   parts.push(c.rate==null?"usage rate shows after about half a day":`using about ${c.rate<1?c.rate.toFixed(1):Math.round(c.rate)} a day`);
-  if(c.lastsDays!=null)parts.push(c.lastsDays>=60?"enough for 2+ months at this rate":`lasts about ${Math.max(1,Math.floor(c.lastsDays))} day${Math.floor(c.lastsDays)===1?"":"s"} at this rate`);
+  if(c.lastsDays!=null){const n=Math.max(1,Math.floor(c.lastsDays));parts.push(c.lastsDays>=60?"enough for 2+ months at this rate":`lasts about ${n} day${n===1?"":"s"} at this rate`)}
   return parts.join(" · ")+(c.low?` · <span class="bad">Running low. At 0, odds, closing prices and auto-settling all stop until your allowance resets.</span>`:"");
 }
 function renderStatus(){
