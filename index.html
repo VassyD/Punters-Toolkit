@@ -117,6 +117,9 @@ details[open] > summary{margin-bottom:12px}
 .del.armed{border-color:var(--bad);color:var(--bad)}
 #t-log td:last-child{white-space:nowrap}
 #t-log tr.editing td{background:var(--bg);padding:12px}
+.ladder tr.adjrow td{background:var(--bg);font-style:italic}
+.ladder tr.adjrow td small{display:block;font-style:normal;color:var(--muted)}
+.chpanel{padding:12px;border-top:1px solid var(--line);background:var(--bg)}
 label.inline{display:flex;align-items:center;gap:8px}
 label.inline input[type="checkbox"]{width:auto;padding:0;accent-color:var(--turf)}
 .board b.warn{color:#ffb4a8}
@@ -1414,23 +1417,39 @@ function sharedGames(legs,excludeId){
 }
 
 // Ladder: every settled step changes the bank by that bet's profit or loss.
+// Ladder: every settled step changes the bank by its profit or loss; money taken out or added changes it directly.
+// rows mixes steps ({b,n,after}) and bank adjustments ({adj,after}) in time order; stepRows is just the steps.
 function ladder(ch){
   const steps=liveBets().filter(b=>b.challengeId===ch.id).sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt)));
-  let bank=ch.start;
-  const rows=steps.map((b,i)=>{
+  const adjs=(ch.adjustments||[]).filter(a=>a&&!a.deleted&&Number.isFinite(a.amount));
+  const events=[...steps.map(b=>({b,at:b.createdAt})),...adjs.map(a=>({adj:a,at:a.at}))].sort((x,y)=>String(x.at).localeCompare(String(y.at)));
+  let bank=ch.start,n=0,lastWasLoss=false,takenOut=0,added=0;
+  const rows=events.map(ev=>{
+    if(ev.adj){
+      bank+=ev.adj.amount;
+      if(ev.adj.amount<0)takenOut-=ev.adj.amount;else added+=ev.adj.amount;
+      lastWasLoss=false;
+      return {adj:ev.adj,after:Math.round(bank*100)/100};
+    }
+    const b=ev.b;n++;
     if(b.result==="won")bank=bank-b.stake+b.stake*b.odds;
     else if(b.result==="lost")bank=bank-b.stake;
     else if(b.result==="cashout"&&Number.isFinite(b.cashout))bank=bank-b.stake+b.cashout;
-    return {b,n:i+1,after:b.result==="pending"?null:Math.round(bank*100)/100};
+    if(b.result==="lost")lastWasLoss=true;else if(b.result!=="pending")lastWasLoss=false;
+    return {b,n,after:b.result==="pending"?null:Math.round(bank*100)/100};
   });
   bank=Math.round(bank*100)/100;
-  const pending=steps.some(b=>b.result==="pending");
+  const pendingStep=steps.find(b=>b.result==="pending");
   let state="active";
-  if(bank<0.01)state="busted";
+  // An empty bank is only "busted" if a losing step emptied it; taking it all out is a stop.
+  if(bank<0.01)state=lastWasLoss?"busted":"stopped";
   else if(bank>=ch.target)state="complete";
   else if(ch.stopped)state="stopped";
-  return {rows,bank,state,pending};
+  return {rows,stepRows:rows.filter(r=>r.b),bank,state,pending:!!pendingStep,pendingStake:pendingStep?pendingStep.stake:0,
+    takenOut:Math.round(takenOut*100)/100,added:Math.round(added*100)/100,steps:n};
 }
+// Money in vs money out for the whole challenge, counting the bank as if taken now.
+function challengeOverall(ch,L){return Math.round(((L.state==="busted"?0:L.bank)+L.takenOut-ch.start-L.added)*100)/100}
 
 function challengeHTML(ch){
   const L=ladder(ch);
@@ -1439,11 +1458,11 @@ function challengeHTML(ch){
   const togo=L.state==="active"&&L.bank>0?Math.max(1,Math.ceil(Math.log(ch.target/L.bank)/Math.LN2-1e-9)):0;
   const label={active:"In progress",complete:"Target reached",busted:"Busted",stopped:"Stopped"}[L.state];
   let foot="";
-  if(L.state==="active"&&L.pending)foot=`<span class="lineinfo">Step ${L.rows.length} is running. Set its result in the bet log below.</span>`;
+  if(L.state==="active"&&L.pending)foot=`<span class="lineinfo">Step ${L.steps} is running. Set its result in the bet log below.</span>`;
   else if(L.state==="active"){
     // Chance per step at 2.00, based on how this challenge's earlier steps were priced (chance × odds).
     // With no estimates yet, assume a typical 5% bookmaker margin: 0.95 ÷ 2.00 = 47.5% per step.
-    const rated=L.rows.map(r=>r.b).filter(b=>Number.isFinite(b.p)&&b.odds>1);
+    const rated=L.stepRows.map(r=>r.b).filter(b=>Number.isFinite(b.p)&&b.odds>1);
     const factor=rated.length?rated.reduce((a,b)=>a+b.p*b.odds,0)/rated.length:0.95;
     const per=Math.min(0.99,factor/2);
     const basis=rated.length?`priced like your earlier step${rated.length===1?"":"s"} (about ${pct(per,0)} each)`:`with a typical bookmaker margin (about ${pct(per,1)} each)`;
@@ -1451,19 +1470,91 @@ function challengeHTML(ch){
     <button class="btn solid" type="button" data-ch-act="step" data-id="${esc(ch.id)}">Add next step (${money(L.bank)})</button>
     <button class="btn" type="button" data-ch-act="stop" data-id="${esc(ch.id)}">Stop here</button>`;
   }
-  else if(L.state==="complete")foot=`<span class="lineinfo">Reached ${money(L.bank)} in ${L.rows.length} step${L.rows.length===1?"":"s"}.</span>`;
-  else if(L.state==="busted")foot=`<span class="lineinfo">Lost at step ${L.rows.length}. Total lost: ${money(ch.start)}.</span>`;
-  else foot=`<span class="lineinfo">Stopped with ${money(L.bank)} from a ${money(ch.start)} start.</span>`;
+  else if(L.state==="complete")foot=`<span class="lineinfo">Reached ${money(L.bank)} in ${L.steps} step${L.steps===1?"":"s"}.</span>`;
+  else if(L.state==="busted")foot=`<span class="lineinfo">Lost at step ${L.steps}.</span>`;
+  else foot=`<span class="lineinfo">Stopped with ${money(L.bank)} in the bank.</span>`;
+  // Money taken out / added, and the overall result once it's over or anything has moved
+  const ov=challengeOverall(ch,L);
+  const moneyLine=[L.takenOut>0?`Taken out: ${money(L.takenOut)}`:"",L.added>0?`Added: ${money(L.added)}`:"",
+    (L.state!=="active"||L.takenOut>0||L.added>0)?`Overall${L.state==="active"?" if you took the bank now":""}: <span class="${ov>0?"pos":ov<0?"neg":""}">${ov>0?"+":""}${money(ov)}</span> on ${money(ch.start+L.added)} put in`:""].filter(Boolean).join(" · ");
+  if(moneyLine)foot+=`<span class="lineinfo">${moneyLine}</span>`;
+  if(L.state!=="busted")foot+=`<button class="btn" type="button" data-ch-act="adjust" data-id="${esc(ch.id)}">Take out / add money</button>`;
+  foot+=`<button class="btn" type="button" data-ch-act="edit" data-id="${esc(ch.id)}">Edit challenge</button>`;
   foot+=`<button class="del" type="button" data-ch-act="delete" data-id="${esc(ch.id)}">Delete challenge</button>`;
-  const rows=L.rows.map(r=>`<tr><td>${r.n}</td><td>${esc(r.b.desc)}</td><td>${odds(r.b.odds)}</td><td>${Number.isFinite(r.b.p)?pct(r.b.p):"–"}</td><td>${money(r.b.stake)}</td><td>${esc(resultName(r.b.result))}</td><td class="${r.b.result==="won"?"pos":r.b.result==="lost"?"neg":""}">${r.after==null?"–":money(r.after)}</td></tr>`).join("");
+  const rows=L.rows.map(r=>r.adj
+    ?`<tr class="adjrow"><td>–</td><td>${esc(r.adj.note||(r.adj.amount<0?"Money taken out":"Money added"))}<small>${esc(r.adj.date||"")}</small></td><td></td><td></td><td>${r.adj.amount<0?"−":"+"}${money(Math.abs(r.adj.amount))}</td><td>${r.adj.amount<0?"Taken out":"Added"} <button class="del" type="button" data-ch-act="deladj" data-id="${esc(ch.id)}" data-adj="${esc(r.adj.id)}" aria-label="Remove this entry">Remove</button></td><td>${money(r.after)}</td></tr>`
+    :`<tr><td>${r.n}</td><td>${esc(r.b.desc)}</td><td>${odds(r.b.odds)}</td><td>${Number.isFinite(r.b.p)?pct(r.b.p):"–"}</td><td>${money(r.b.stake)}</td><td>${esc(resultName(r.b.result))}</td><td class="${r.b.result==="won"?"pos":r.b.result==="lost"?"neg":""}">${r.after==null?"–":money(r.after)}</td></tr>`).join("");
+  const panel=chPanel&&chPanel.id===ch.id?challengePanelHTML(ch,L):"";
   return `<article class="match ladder">
     <div class="match-head"><h3>${esc(ch.name||"Challenge")}</h3><span class="pill ${L.state}">${label}</span></div>
     <div class="ladder-meta"><span>${money(ch.start)}</span><span>Bank ${money(L.bank)}</span><span>${money(ch.target)}</span></div>
     <div class="ladder-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(prog*100)}"><span style="width:${(prog*100).toFixed(1)}%"></span></div>
     ${rows?`<div class="tablewrap"><table><thead><tr><th>Step</th><th>Bet</th><th>Odds</th><th>Est. chance</th><th>Stake</th><th>Result</th><th>Bank after</th></tr></thead><tbody>${rows}</tbody></table></div>`:`<p class="note" style="padding:10px 12px 0">No steps yet. Add the first one with ${money(ch.start)}.</p>`}
     <div class="match-foot">${foot}</div>
+    ${panel}
   </article>`;
 }
+
+// ---- Adjusting a challenge: money in or out, or name/start/target ----
+// The draft lives here so a sync that redraws the card doesn't lose what's typed.
+let chPanel=null; // {id, mode:"adjust"|"edit", draft}
+function challengePanelHTML(ch,L){
+  const d=chPanel.draft;
+  if(chPanel.mode==="adjust"){
+    const avail=Math.max(0,L.bank-L.pendingStake);
+    return `<form class="grid chpanel" id="t-chpanel" data-id="${esc(ch.id)}">
+      <label>What happened<select id="c-dir" data-cf="dir"><option value="out"${d.dir==="out"?" selected":""}>Took money out</option><option value="in"${d.dir==="in"?" selected":""}>Added money</option></select></label>
+      <label>Amount $<input id="c-amount" data-cf="amount" type="number" step="0.01" min="0.01" value="${esc(d.amount)}"></label>
+      <label>Date<input id="c-date" data-cf="date" type="date" value="${esc(d.date)}"></label>
+      <label class="span">Note<input id="c-note" data-cf="note" type="text" class="name" placeholder="optional, e.g. banked some profit" value="${esc(d.note)}"></label>
+      <p class="note span">Available to take out: ${money(avail)}${L.pendingStake?` (the bank minus the ${money(L.pendingStake)} riding on the running step)`:""}. This changes the bank only, not your bets' profit or loss.</p>
+      <p class="note err span" id="c-err" hidden></p>
+      <button class="btn solid" type="submit">Save</button>
+      <button class="btn" type="button" data-ch-act="closepanel" data-id="${esc(ch.id)}">Cancel</button>
+    </form>`;
+  }
+  return `<form class="grid chpanel" id="t-chpanel" data-id="${esc(ch.id)}">
+    <label class="span">Name<input id="c-name" data-cf="name" type="text" class="name" value="${esc(d.name)}"></label>
+    <label>Starting stake $<input id="c-start" data-cf="start" type="number" step="0.01" min="0.01" value="${esc(d.start)}"></label>
+    <label>Target $<input id="c-target" data-cf="target" type="number" step="1" min="1" value="${esc(d.target)}"></label>
+    ${L.steps?`<p class="note span">Changing the starting stake changes every bank figure after it.</p>`:""}
+    <p class="note err span" id="c-err" hidden></p>
+    <button class="btn solid" type="submit">Save</button>
+    <button class="btn" type="button" data-ch-act="closepanel" data-id="${esc(ch.id)}">Cancel</button>
+  </form>`;
+}
+// Dropdowns report a change as "change" in some browsers and "input" in others, so listen for both.
+["input","change"].forEach(t=>$("t-challenges").addEventListener(t,e=>{
+  const f=e.target.closest("[data-cf]");if(!f||!chPanel)return;
+  chPanel.draft[f.dataset.cf]=f.value;
+}));
+$("t-challenges").addEventListener("submit",e=>{
+  const form=e.target.closest("#t-chpanel");if(!form||!chPanel)return;
+  e.preventDefault();
+  const ch=findCh(form.dataset.id);if(!ch)return;
+  const L=ladder(ch),d=chPanel.draft,err=$("c-err");
+  const fail=m=>{err.textContent=m;err.hidden=false};
+  if(chPanel.mode==="adjust"){
+    const amt=num(d.amount);
+    if(!(amt>0))return fail("Enter an amount.");
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(d.date))return fail("Choose a date.");
+    const avail=Math.max(0,L.bank-L.pendingStake);
+    if(d.dir==="out"&&amt>avail+0.005)return fail(`You can take out up to ${money(avail)}.`);
+    const signed=Math.round((d.dir==="out"?-amt:amt)*100)/100;
+    change(()=>{
+      ch.adjustments=[...(ch.adjustments||[]),{id:newId(),at:nowIso(),date:d.date,amount:signed,note:String(d.note||"").trim()}];
+      ch.updatedAt=nowIso();
+      chPanel=null;
+    });
+    toast(`${signed<0?"Took":"Added"} ${money(Math.abs(signed))} ${signed<0?"out of":"to"} "${ch.name}". Bank is now ${money(ladder(ch).bank)}.`);
+  }else{
+    const start=num(d.start),target=num(d.target),name=String(d.name||"").trim()||"Challenge";
+    if(!(start>0))return fail("Enter a starting stake.");
+    if(!(target>start))return fail("The target needs to be bigger than the starting stake.");
+    change(()=>{ch.name=name;ch.start=Math.round(start*100)/100;ch.target=Math.round(target*100)/100;ch.updatedAt=nowIso();chPanel=null});
+    toast(`Saved "${name}".`);
+  }
+});
 
 const resultName=r=>({pending:"Pending",won:"Won",lost:"Lost",void:"Void",cashout:"Cashed out"})[r]||r;
 // Profit or loss. A bonus bet's stake isn't your money: a win pays the profit only and a loss costs nothing.
@@ -1640,15 +1731,15 @@ function editRowHTML(b){
 // What the challenge bank was just before this bet, to stop a stake larger than the bank.
 function bankBefore(b){
   const ch=b.challengeId&&findCh(b.challengeId);if(!ch||ch.deleted)return null;
-  const rows=ladder(ch).rows,i=rows.findIndex(r=>r.b.id===b.id);
+  const rows=ladder(ch).rows,i=rows.findIndex(r=>r.b&&r.b.id===b.id);
   if(i<0)return null;
   if(i===0)return ch.start;
   return rows[i-1].after;
 }
-$("t-log").addEventListener("input",e=>{
+["input","change"].forEach(t=>$("t-log").addEventListener(t,e=>{
   const f=e.target.closest("[data-ef]");if(!f||!editDraft)return;
   editDraft[f.dataset.ef]=f.type==="checkbox"?f.checked:f.value;
-});
+}));
 $("t-log").addEventListener("submit",e=>{
   const form=e.target.closest("#t-editform");if(!form)return;
   e.preventDefault();
@@ -1737,6 +1828,19 @@ $("t-challenges").addEventListener("click",e=>{
     change(()=>{ch.stopped=true;ch.updatedAt=nowIso()});
   }else if(act==="delete"){
     armOrRun(btn,()=>change(()=>{ch.deleted=true;ch.updatedAt=nowIso()}));
+  }else if(act==="adjust"){
+    chPanel={id:ch.id,mode:"adjust",draft:{dir:"out",amount:"",date:todayStr(),note:""}};renderTracker();
+    const a=$("c-amount");if(a)a.focus();
+  }else if(act==="edit"){
+    chPanel={id:ch.id,mode:"edit",draft:{name:ch.name||"",start:String(ch.start),target:String(ch.target)}};renderTracker();
+    const n=$("c-name");if(n)n.focus();
+  }else if(act==="closepanel"){
+    chPanel=null;renderTracker();
+  }else if(act==="deladj"){
+    armOrRun(btn,()=>change(()=>{
+      ch.adjustments=(ch.adjustments||[]).map(a=>a.id===btn.dataset.adj?{...a,deleted:true}:a);
+      ch.updatedAt=nowIso();
+    }));
   }
 });
 
@@ -1763,7 +1867,11 @@ function isFirstStep(b){
   return !!first&&first.id===b.id;
 }
 function newMoney(b){return b.practice||b.betType==="bonus"||b.result==="void"?0:(!b.challengeId||isFirstStep(b))?b.stake:0}
-function monthSpend(month=monthOf(todayStr())){return liveBets().filter(b=>monthOf(b.date)===month).reduce((a,b)=>a+newMoney(b),0)}
+function monthSpend(month=monthOf(todayStr())){
+  const bets=liveBets().filter(b=>monthOf(b.date)===month).reduce((a,b)=>a+newMoney(b),0);
+  const added=liveChallenges().reduce((a,ch)=>a+(ch.adjustments||[]).filter(x=>!x.deleted&&x.amount>0&&monthOf(x.date)===month).reduce((s,x)=>s+x.amount,0),0);
+  return bets+added;
+}
 
 // Going over the limit needs a second press of Log bet.
 let limitArmed=false,sharedArmed=false;
@@ -1791,7 +1899,7 @@ $("t-betform").addEventListener("submit",e=>{
     const ch=findCh(chId),L=ch&&ladder(ch);
     if(!L||L.state!=="active"||L.pending){err.textContent="That challenge isn't ready for another step.";err.hidden=false;return}
     if(stake>L.bank+0.005){err.textContent=`The stake is more than the challenge bank (${money(L.bank)}).`;err.hidden=false;return}
-    if(L.rows.length)fresh=0; // later steps roll winnings, not new money
+    if(L.steps)fresh=0; // later steps roll winnings, not new money
   }
   const date=$("t-date").value||todayStr();
   const lim=num(T.settings.monthlyLimit);
@@ -1877,7 +1985,9 @@ function exportJson(){
       staked:r2(staked),profitLoss:r2(pl),returnOnStakePct:staked>0?r2(pl/staked*100):null,monthlyLimit:num(T.settings.monthlyLimit)>0?num(T.settings.monthlyLimit):null},
     practiceSummary:{bets:prac.length,settled:pracDone.length,won:pracDone.filter(b=>b.result==="won").length,notionalProfitLoss:r2(pracDone.reduce((a,b)=>a+b.profitLoss,0))},
     bets,
-    challenges:liveChallenges().map(ch=>{const L=ladder(ch);return {name:ch.name,start:ch.start,target:ch.target,state:L.state,bank:L.bank,steps:L.rows.length,startedAt:ch.createdAt}})
+    challenges:liveChallenges().map(ch=>{const L=ladder(ch);return {name:ch.name,start:ch.start,target:ch.target,state:L.state,bank:L.bank,steps:L.steps,
+      takenOut:L.takenOut,added:L.added,overall:challengeOverall(ch,L),startedAt:ch.createdAt,
+      adjustments:(ch.adjustments||[]).filter(a=>!a.deleted).map(a=>({date:a.date,amount:a.amount,note:a.note||""}))}})
   },null,2);
 }
 function csvCell(v){
