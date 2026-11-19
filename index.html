@@ -70,6 +70,13 @@ td:first-child{font-family:var(--f-body)}
 .seg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--line);border-radius:5px;overflow:hidden;max-width:100%}
 .seg button{font-family:var(--f-display);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:.95rem;border:0;background:transparent;color:var(--muted);padding:7px 16px;cursor:pointer}
 .seg button[aria-pressed="true"]{background:var(--board);color:var(--board-ink)}
+/* Builder extras */
+.boostnote{font-family:var(--f-body);font-size:.8rem;font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)}
+.match td small.neg,.match td small.pos{display:block;font-family:var(--f-body);font-size:.78rem}
+.match td small.neg,.pricecheck li.neg{color:var(--bad)} .match td small.pos{color:var(--good)}
+.pricecheck{padding:8px 12px;border-top:1px solid var(--line);background:var(--bg);font-size:.86rem}
+.pricecheck ul{margin:4px 0;padding-left:18px}
+.match-foot a{color:var(--turf)}
 /* Value finder */
 .vf-books{display:grid;gap:6px}
 .vf-books-label{font-size:.78rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
@@ -255,8 +262,15 @@ footer strong{color:var(--ink)}
       </label>
       <label>Prices from
         <select id="b-src">
-          <option value="best" selected>Best available</option>
+          <option value="mine" selected>Best of my bookmakers</option>
           <option value="sb" id="b-src-home">Your bookmaker</option>
+        </select>
+      </label>
+      <label>Multi boost %<input id="b-boost" type="number" step="1" min="0" max="100" value="0"></label>
+      <label>Boost applies to
+        <select id="b-boosttype">
+          <option value="win" selected>Winnings</option>
+          <option value="odds">Odds</option>
         </select>
       </label>
       <label>Legs from
@@ -280,7 +294,7 @@ footer strong{color:var(--ink)}
       <button class="btn" type="button" id="b-more10">Show 10 more</button>
       <button class="btn" type="button" id="b-moreall">Show all</button>
     </div>
-    <p class="note">A multi only pays when every leg wins, and each leg carries a bookmaker margin, so more legs means more margin against you. That's why singles near your target usually rank highest. A 2.00 price implies a 50% chance; after margins the real chance is usually a bit lower, which is the negative EV you'll see on most options. The estimate assumes legs from different matches are independent.</p>
+    <p class="note">Each multi is priced at one bookmaker, because a multi has to be placed in one place: it's checked at every bookmaker you've ticked under My bookmakers on the Value finder that offers all of its legs, and the best price is shown. A multi boost is applied to 2+ leg multis for the price range and EV; Sportsbet's boost varies, so enter the one you're offered. Multis whose legs have drifted (the market thinks they're less likely than earlier) go to the bottom, because that usually means news is out. A multi only pays when every leg wins, and each leg carries a margin, so more legs means more margin against you. The estimate assumes legs from different matches are independent.</p>
   </section>
 
   <!-- TRACKER -->
@@ -715,7 +729,7 @@ function fairProps(pm){
     const byKey=new Map(b.outcomes.map(o=>[selKey(o),o]));
     for(const o of b.outcomes){
       const opp=byKey.get(selKey({...o,side:OPPOSITE[o.side]}));
-      if(opp)push(pairs,selKey(o),g,(1/o.price)/(1/o.price+1/opp.price));
+      if(opp)push(pairs,selKey(o),g,devig([o.price,opp.price])[0]);
       else push(singles,selKey(o),g,1/o.price);
     }
   }
@@ -942,60 +956,84 @@ $("l-list").addEventListener("click",e=>{
 /* Multi builder */
 // Bookmakers with a shared owner that usually post identical prices. They count once in the average.
 const BOOK_GROUPS={ladbrokes_au:"entain",neds:"entain"};
+// Margin removal by the power method: find k so that the chances (1/odds)^k add to exactly 100%.
+// It takes more of the margin off longshots than favourites, which is how bookmakers tend to load it.
+// (Same calculation as the Worker.)
+function devig(prices){
+  const q=prices.map(x=>1/x);
+  const f=k=>q.reduce((a,v)=>a+Math.pow(v,k),0)-1;
+  let lo=0.2,hi=10;
+  if(!(f(lo)>0&&f(hi)<0)){const s=q.reduce((a,v)=>a+v,0);return q.map(v=>v/s)}
+  for(let i=0;i<60;i++){const mid=(lo+hi)/2;if(f(mid)>0)lo=mid;else hi=mid}
+  const k=(lo+hi)/2,r=q.map(v=>Math.pow(v,k)),t=r.reduce((a,v)=>a+v,0);
+  return r.map(v=>v/t);
+}
 // Average no-vig probability per outcome across every book that prices the full market.
 function consensus(ev,names){
   const groups=new Map();
   ev.books.forEach(b=>{
     const p=names.map(n=>b.h2h[n]);
     if(!p.every(x=>x>1))return;
-    const s=p.reduce((a,x)=>a+1/x,0);
     const g=BOOK_GROUPS[b.key]||b.key;
     if(!groups.has(g))groups.set(g,[]);
-    groups.get(g).push(p.map(x=>1/x/s));
+    groups.get(g).push(devig(p));
   });
   const per=[...groups.values()].map(list=>names.map((_,j)=>list.reduce((a,v)=>a+v[j],0)/list.length));
   return names.map((_,j)=>per.length?per.reduce((a,v)=>a+v[j],0)/per.length:NaN);
 }
 
-// Candidate legs from head-to-head odds. ei is the match id, used to keep one leg per match.
-function h2hCandidates(events,source,now){
+// Candidate legs from head-to-head odds at one bookmaker. ei is the match id, used to keep one leg per match.
+// move is how far the fair chance has shifted since the earliest price recorded today (negative = drifting).
+function h2hCandidates(events,bookKey,now){
   const cands=[];
   events.forEach(ev=>{
     if(Date.parse(ev.start)<=now)return;
-    const {names,best,sb}=pricesFor(ev);
+    const b=ev.books.find(x=>x.key===bookKey);if(!b)return;
+    const {names}=pricesFor(ev);
     const fair=consensus(ev,names);
+    const h=ev.hist,hrs=h&&h.t0?(now-Date.parse(h.t0))/3600000:null;
     names.forEach((n,j)=>{
-      let price,book,bookKey;
-      if(source==="sb"){if(!sb||!(sb.h2h[n]>1))return;price=sb.h2h[n];book=sb.title;bookKey=sb.key}
-      else{price=best[j];if(!(price>1))return;const bk=ev.books.find(b=>b.h2h[n]===price)||{};book=bk.title||"";bookKey=bk.key}
-      cands.push({ei:ev.id,team:n,label:`${n} H2H`,match:`${ev.home} v ${ev.away}`,start:ev.start,price,book,bookKey,p:fair[j],rough:false,meta:legMeta(ev,n,price,bookKey,fair[j])});
+      const price=b.h2h[n];if(!(price>1))return;
+      const p0=h&&h.p0?h.p0[n]:undefined;
+      const move=Number.isFinite(p0)&&Number.isFinite(fair[j])&&hrs>=0.25?fair[j]-p0:null;
+      cands.push({ei:ev.id,team:n,label:`${n} H2H`,match:`${ev.home} v ${ev.away}`,start:ev.start,sport:liveData.sport,price,book:b.title,bookKey,
+        p:fair[j],rough:false,move,p0:move==null?null:p0,moveHrs:move==null?null:hrs,meta:legMeta(ev,n,price,bookKey,fair[j])});
     });
   });
   return cands;
 }
-// Candidate legs from every player market loaded so far.
-function propCandidates(source,now){
+// Candidate legs from every player market loaded so far, at one bookmaker.
+function propCandidates(bookKey,now){
   const cands=[];
   for(const pm of propsData.values()){
     if(!pm.books.length||Date.parse(pm.start)<=now)continue;
+    const title=(pm.books.find(b=>b.key===bookKey)||{}).title;if(!title)continue;
     for(const s of propSelections(pm)){
-      let price,bookKey;
-      if(source==="sb"){if(!(s.prices[SB]>1))continue;price=s.prices[SB];bookKey=SB}
-      else{price=s.best;bookKey=s.bestKey}
-      const book=(pm.books.find(b=>b.key===bookKey)||{}).title||"";
-      cands.push({ei:pm.id,team:s.label,label:s.label,match:`${pm.home} v ${pm.away}`,start:pm.start,price,book,bookKey,
-        p:s.rough?NaN:s.fair,rough:s.rough,implied:s.fair,meta:propMeta(pm,s,price,bookKey)});
+      const price=s.prices[bookKey];if(!(price>1))continue;
+      cands.push({ei:pm.id,team:s.label,label:s.label,match:`${pm.home} v ${pm.away}`,start:pm.start,sport:pm.sport,price,book:title,bookKey,
+        p:s.rough?NaN:s.fair,rough:s.rough,implied:s.fair,move:null,meta:propMeta(pm,s,price,bookKey)});
     }
   }
   return cands;
 }
 
-function buildMultis(cands,{target,tol,minLegs,maxLegs}){
+// A multi boost applies to 2+ leg multis only: "win" adds the % to the winnings, "odds" to the whole price.
+function boostedOdds(o,nLegs,boost,type){
+  if(!(boost>0)||nLegs<2)return o;
+  return type==="odds"?o*(1+boost):1+(o-1)*(1+boost);
+}
+const DRIFT=0.03; // a leg whose fair chance has dropped 3+ points since earlier counts as drifting
+
+function buildMultis(cands,{target,tol,minLegs,maxLegs,boost=0,boostType="win"}){
   const lo=target*(1-tol),hi=target*(1+tol);
+  // A boost only ever raises the price, so a base price above the range can never come back into it.
   cands=cands.filter(c=>c.price>1&&c.price<=hi).sort((a,b)=>a.price-b.price);
   const out=[],used=new Set(),legs=[];
   (function dfs(from,o){
-    if(legs.length>=minLegs&&o>=lo&&o<=hi)out.push({legs:[...legs],odds:o});
+    if(legs.length>=minLegs){
+      const B=boostedOdds(o,legs.length,boost,boostType);
+      if(B>=lo&&B<=hi)out.push({legs:[...legs],odds:B,baseOdds:o,boosted:B!==o});
+    }
     if(legs.length===maxLegs||out.length>=5000)return;
     for(let k=from;k<cands.length;k++){
       const c=cands[k];
@@ -1008,10 +1046,34 @@ function buildMultis(cands,{target,tol,minLegs,maxLegs}){
   out.forEach(m=>{
     m.p=m.legs.every(l=>Number.isFinite(l.p))?m.legs.reduce((a,l)=>a*l.p,1):NaN;
     m.ev=m.p*m.odds-1;
+    m.drift=m.legs.some(l=>l.move!=null&&l.move<=-DRIFT);
   });
-  out.sort((a,b)=>((b.ev||-9)-(a.ev||-9))||(Math.abs(a.odds-target)-Math.abs(b.odds-target)));
   return out;
 }
+// Drifting multis last, then best EV, then closest to the target.
+function builderSort(target){
+  return (a,b)=>((a.drift?1:0)-(b.drift?1:0))||((b.ev||-9)-(a.ev||-9))||(Math.abs(a.odds-target)-Math.abs(b.odds-target));
+}
+const comboKey=m=>m.legs.map(l=>`${l.ei}|${l.label}`).sort().join("+");
+
+// ---- Timing and team news ----
+function startsIn(iso,now=Date.now()){
+  const m=Math.round((Date.parse(iso)-now)/60000);
+  if(m<1)return "starting now";
+  if(m<60)return `starts in ${m} min`;
+  if(m<48*60)return `starts in ${Math.round(m/60)} h`;
+  return `starts in ${Math.round(m/1440)} days`;
+}
+const NBA_EARLY_HRS=3;
+const NEWS_LINKS={
+  nba:["NBA injury report","https://www.espn.com/nba/injuries"],
+  nfl:["NFL injury report","https://www.espn.com/nfl/injuries"],
+  mlb:["MLB injury report","https://www.espn.com/mlb/injuries"],
+  afl:["AFL injury list","https://www.afl.com.au/matches/injury-list"],
+  nrl:["NRL casualty ward","https://www.nrl.com/casualty-ward/"]
+};
+// Check prices results, kept per multi so they survive the list being redrawn.
+const priceChecks=new Map();
 
 let builderResults=[];
 // How many results are on screen. Goes back to 8 when you change a setting.
@@ -1033,38 +1095,121 @@ function renderBuilder(){
   }
   if(!(target>1)){status.textContent="Target odds must be above 1.00.";list.innerHTML="";return}
   const [minLegs,maxLegs]=$("b-legs").value.split("-").map(Number);
-  const cands=[...(useH2h?h2hCandidates(liveData.events,source,now):[]),...(useProps?propCandidates(source,now):[])];
-  builderResults=buildMultis(cands,{target,tol:num($("b-tol").value),minLegs,maxLegs});
+  const boost=Math.max(0,num($("b-boost").value)||0)/100,boostType=$("b-boosttype").value;
+  // Every multi is priced at one bookmaker: search each of your bookmakers separately, then keep each combination's best price.
+  const books=source==="sb"?[SB]:vfMyBooks();
+  const best=new Map();
+  for(const bk of books){
+    const cands=[...(useH2h?h2hCandidates(liveData.events,bk,now):[]),...(useProps?propCandidates(bk,now):[])];
+    for(const m of buildMultis(cands,{target,tol:num($("b-tol").value),minLegs,maxLegs,boost,boostType})){
+      const k=comboKey(m);m.key=k;m.book=m.legs[0].book;m.bookKey=bk;
+      const cur=best.get(k);
+      if(!cur){m.others=[];best.set(k,m)}
+      else if(m.odds>cur.odds){m.others=[...cur.others,{book:cur.book,odds:cur.odds}];best.set(k,m)}
+      else cur.others.push({book:m.book,odds:m.odds});
+    }
+  }
+  builderResults=[...best.values()].sort(builderSort(target));
   $("b-count").textContent=builderResults.length;
   $("b-best").textContent=builderResults.length&&Number.isFinite(builderResults[0].p)?pct(builderResults[0].p):"–";
   const shown=builderResults.slice(0,builderLimit);
   const using=[useH2h?`${sportName(liveData.sport)} head-to-head`:"",useProps?`player markets from ${propCount} match${propCount===1?"":"es"}`:""].filter(Boolean).join(" and ");
+  const bookNames=books.map(k=>bookTitles[k]||k).join(", ");
+  const boostTxt=boost>0?` A ${Math.round(boost*100)}% boost on ${boostType==="odds"?"odds":"winnings"} is applied to 2+ leg multis.`:"";
+  const nPos=builderResults.filter(m=>m.ev>0).length;
   status.textContent=builderResults.length
-    ?`Using ${using}. Showing ${shown.length===builderResults.length?"all":`${shown.length} of`} ${builderResults.length}, best estimated chance first.`
-    :`Nothing from ${using} lands within range of ${odds(target)}. Try a wider range, more legs, or best available prices.`;
-  list.innerHTML=shown.map((m,i)=>`<article class="match">
+    ?`Using ${using}, priced at ${bookNames}. Showing ${shown.length===builderResults.length?"all":`${shown.length} of`} ${builderResults.length}, best estimated value first.${boostTxt}${nPos?` ${nPos} ${nPos===1?"is":"are"} +EV.`:""}`
+    :`Nothing from ${using} at ${bookNames} lands within range of ${odds(target)}. Try a wider range, more legs, or tick more bookmakers on the Value finder.${boostTxt}`;
+  list.innerHTML=shown.map((m,i)=>builderCardHTML(m,i,stake,now)).join("");
+  const left=builderResults.length-shown.length;
+  $("b-more").hidden=left<=0;
+  if(left>0){$("b-more10").textContent=`Show ${Math.min(10,left)} more`;$("b-moreall").textContent=`Show all ${builderResults.length}`}
+}
+function builderCardHTML(m,i,stake,now){
+  const evTag=m.ev>0?`<span class="pill complete">+EV${m.boosted?" with boost":""}</span> `:"";
+  const early=m.legs.filter(l=>l.sport==="nba"&&Date.parse(l.start)-now>NBA_EARLY_HRS*3600000);
+  const sports=[...new Set(m.legs.map(l=>l.sport).filter(s=>NEWS_LINKS[s]))];
+  const chk=priceChecks.get(m.key);
+  const notes=[];
+  const sh=sharedGames(m.legs.map(l=>l.meta));
+  if(sh.length)notes.push(`<span class="sharewarn">You already have a pending bet on ${esc(sh.map(g=>g.match).join(" and "))}.</span>`);
+  if(m.drift)notes.push(`<span class="sharewarn">A leg has drifted since earlier today. News may be out, so check before betting.</span>`);
+  if(early.length)notes.push(`<span class="sharewarn">NBA ${early.length===1?"game":"games"} ${startsIn(early[0].start,now).replace("starts","start")}. Team news often lands close to tip-off, and your biggest moves against you came from betting early. Consider waiting.</span>`);
+  if(m.others&&m.others.length)notes.push(`Also: ${m.others.sort((a,b)=>b.odds-a.odds).map(o=>`${esc(o.book)} ${odds(o.odds)}`).join(", ")}.`);
+  if(sports.length)notes.push(`Team news: ${sports.map(s=>`<a href="${NEWS_LINKS[s][1]}" target="_blank" rel="noopener">${NEWS_LINKS[s][0]}</a>`).join(" · ")}`);
+  return `<article class="match">
     <div class="match-head">
-      <h3>${m.legs.length===1?"Single":m.legs.length+"-leg multi"} @ ${odds(m.odds)}</h3>
+      <h3>${evTag}${m.legs.length===1?"Single":m.legs.length+"-leg multi"} @ ${odds(m.odds)}${m.boosted?` <small class="boostnote">boosted from ${odds(m.baseOdds)}</small>`:""} · ${esc(m.book)}</h3>
       <span class="stat">${Number.isFinite(m.p)
         ?`Est. chance ${pct(m.p)} · EV <span class="${m.ev>0?"pos":"neg"}">${(m.ev>0?"+":"")+money(m.ev*100)}</span> per $100`
         :"Est. chance n/a: a leg's market only prices one side"}</span>
     </div>
     <div class="tablewrap"><table>
-      <thead><tr><th>Selection</th><th>Match</th><th>Price</th><th>Book</th><th>Est. chance</th></tr></thead>
-      <tbody>${m.legs.map(l=>`<tr><td>${esc(l.label)}</td><td>${esc(l.match)}</td><td>${odds(l.price)}</td><td>${esc(l.book)}</td><td>${l.rough?"~"+pct(l.implied):pct(l.p)}</td></tr>`).join("")}</tbody>
+      <thead><tr><th>Selection</th><th>Match</th><th>Price</th><th>Est. chance</th><th>Starts</th></tr></thead>
+      <tbody>${m.legs.map(l=>{
+        const mv=l.move!=null&&Math.abs(l.move)>=0.02?`<small class="${l.move<0?"neg":"pos"}">${l.move<0?"drifted":"firmed"} ${pct(l.p0)} → ${pct(l.p)} in ${Math.max(1,Math.round(l.moveHrs))} h</small>`:"";
+        const late=l.sport==="nba"&&Date.parse(l.start)-now>NBA_EARLY_HRS*3600000;
+        return `<tr><td>${esc(l.label)}</td><td>${esc(l.match)}</td><td>${odds(l.price)}</td><td>${l.rough?"~"+pct(l.implied):pct(l.p)}${mv}</td><td class="${late?"neg":""}">${startsIn(l.start,now).replace("starts in ","")}</td></tr>`;
+      }).join("")}</tbody>
     </table></div>
+    ${chk?`<div class="pricecheck">${chk}</div>`:""}
     <div class="match-foot">
-      <span class="lineinfo">$${stake.toLocaleString("en-AU")} returns ${money(m.odds*stake)} if every leg wins.${(()=>{const sh=sharedGames(m.legs.map(l=>l.meta));return sh.length?` <span class="sharewarn">You already have a pending bet on ${esc(sh.map(g=>g.match).join(" and "))}.</span>`:""})()}</span>
+      <span class="lineinfo">$${stake.toLocaleString("en-AU")} returns ${money(m.odds*stake)} if every leg wins.${notes.length?" "+notes.join(" "):""}</span>
+      <button class="btn" type="button" data-check="${i}">Check prices (1 credit)</button>
       <button class="btn" type="button" data-build="${i}">Load into Multi</button>
       <button class="btn" type="button" data-logbuild="${i}" data-practice="1">Log as practice</button>
       <button class="btn solid" type="button" data-logbuild="${i}">Log this bet</button>
     </div>
-  </article>`).join("");
-  const left=builderResults.length-shown.length;
-  $("b-more").hidden=left<=0;
-  if(left>0){$("b-more10").textContent=`Show ${Math.min(10,left)} more`;$("b-moreall").textContent=`Show all ${builderResults.length}`}
+  </article>`;
 }
-["b-target","b-tol","b-legs","b-src","b-pool","b-stake"].forEach(id=>$(id).addEventListener("input",()=>{builderLimit=BUILDER_FIRST;renderBuilder()}));
+
+// Re-fetch the legs' prices right now (skipping the 15-minute cache) and report anything that moved.
+async function checkPrices(i,btn){
+  const m=builderResults[i];if(!m)return;
+  btn.disabled=true;btn.textContent="Checking…";
+  try{
+    const freshH2h={};
+    for(const sp of [...new Set(m.legs.filter(l=>!l.meta.market).map(l=>l.meta.sport))]){
+      const d=await api(`/odds?sport=${sp}&fresh=1`);
+      freshH2h[sp]=d;
+      if(liveData&&liveData.sport===sp)liveData=d;
+    }
+    for(const l of m.legs.filter(l=>l.meta.market)){
+      const d=await api(`/props?sport=${l.meta.sport}&event=${encodeURIComponent(l.meta.eventId)}&market=${l.meta.market}&fresh=1`);
+      const old=propsData.get(l.meta.eventId+"|"+l.meta.market)||{};
+      d.sport=l.meta.sport;d.id=d.id||l.meta.eventId;d.home=d.home||old.home;d.away=d.away||old.away;d.start=d.start||old.start;d.books=d.books||[];d.market=l.meta.market;
+      propsData.set(l.meta.eventId+"|"+l.meta.market,d);
+    }
+    saveProps();
+    let base=1,missing=false;
+    const rows=m.legs.map(l=>{
+      let now=null;
+      if(l.meta.market){
+        const pm=propsData.get(l.meta.eventId+"|"+l.meta.market);
+        const s=pm&&propSelections(pm).find(x=>x.key===selKey(l.meta));
+        now=s?s.prices[m.bookKey]:null;
+      }else{
+        const ev=(freshH2h[l.meta.sport]||{events:[]}).events.find(e=>e.id===l.meta.eventId);
+        const b=ev&&ev.books.find(x=>x.key===m.bookKey);
+        now=b?b.h2h[l.meta.team]:null;
+      }
+      if(!(now>1)){missing=true;return `<li><b>${esc(l.label)}</b>: no longer offered by ${esc(m.book)}</li>`}
+      base*=now;
+      const ch=now/l.price-1,big=Math.abs(ch)>=0.05;
+      return `<li${big?' class="neg"':""}><b>${esc(l.label)}</b>: ${odds(l.price)} → ${odds(now)}${Math.abs(ch)>=0.005?` (${ch>0?"+":""}${pct(ch)})`:" (no change)"}${big?(now>l.price?" Drifted a lot. Check team news.":" Shortened a lot."):""}</li>`;
+    });
+    const B=boostedOdds(base,m.legs.length,Math.max(0,num($("b-boost").value)||0)/100,$("b-boosttype").value);
+    const t=new Date().toLocaleTimeString("en-AU",{hour:"numeric",minute:"2-digit"});
+    priceChecks.set(m.key,`<b>Prices at ${t}</b> (${esc(m.book)}):<ul>${rows.join("")}</ul>${missing?"":`Multi now ${odds(B)} (was ${odds(m.odds)}).`}`);
+    renderLive();renderValue();
+  }catch(e){
+    priceChecks.set(m.key,`Couldn't check prices: ${esc(e.message)}`);
+  }
+  renderBuilder();
+}
+
+["b-target","b-tol","b-legs","b-src","b-pool","b-stake","b-boost","b-boosttype"].forEach(id=>$(id).addEventListener("input",()=>{builderLimit=BUILDER_FIRST;renderBuilder()}));
+["b-src","b-boosttype"].forEach(id=>$(id).addEventListener("change",()=>{builderLimit=BUILDER_FIRST;renderBuilder()}));
 $("b-more10").addEventListener("click",()=>{builderLimit+=10;renderBuilder()});
 $("b-moreall").addEventListener("click",()=>{builderLimit=Infinity;renderBuilder()});
 // Picking a challenge stakes the whole bank, like every challenge step.
@@ -1075,6 +1220,8 @@ $("b-ch").addEventListener("change",()=>{
 });
 const builderLegMeta=l=>l.meta;
 $("b-list").addEventListener("click",e=>{
+  const chk=e.target.closest("button[data-check]");
+  if(chk){checkPrices(+chk.dataset.check,chk);return}
   const load=e.target.closest("button[data-build]"),log=e.target.closest("button[data-logbuild]");
   const m=builderResults[+((load||log||{}).dataset||{})[load?"build":"logbuild"]];if(!m)return;
   if(load){
@@ -1083,11 +1230,12 @@ $("b-list").addEventListener("click",e=>{
     $("m-stake").value=$("b-stake").value;calcMulti();
     show("multi");
   }else{
-    const books=[...new Set(m.legs.map(l=>l.book).filter(Boolean))];
     const rank=+log.dataset.logbuild+1;
-    const source={from:"builder",rank,of:builderResults.length,settings:{target:num($("b-target").value),within:num($("b-tol").value),legs:$("b-legs").value,prices:$("b-src").value==="sb"?homeName():"best available",legsFrom:$("b-pool").value}};
+    const boostPct=Math.max(0,num($("b-boost").value)||0);
+    const source={from:"builder",rank,of:builderResults.length,settings:{target:num($("b-target").value),within:num($("b-tol").value),legs:$("b-legs").value,
+      prices:$("b-src").value==="sb"?homeName():"best of my bookmakers",legsFrom:$("b-pool").value,boostPct,boostOn:$("b-boosttype").value,baseOdds:Math.round(m.baseOdds*100)/100}};
     const practice=log.dataset.practice==="1";
-    prefillBet({source,practice,challengeId:practice?"":$("b-ch").value,tag:rank===1?"Builder top pick":"Builder other pick",desc:m.legs.map(l=>l.label).join(" + "),odds:m.odds,stake:num($("b-stake").value),p:m.p,book:books.length===1?books[0]:"",legs:m.legs.map(builderLegMeta)});
+    prefillBet({source,practice,challengeId:practice?"":$("b-ch").value,tag:rank===1?"Builder top pick":"Builder other pick",desc:m.legs.map(l=>l.label).join(" + "),odds:m.odds,stake:num($("b-stake").value),p:m.p,book:m.book,legs:m.legs.map(builderLegMeta),betType:m.boosted?"boost":"normal"});
   }
 });
 
@@ -1295,10 +1443,10 @@ function closeOf(b){
 
 // Fill the Log a bet form from another tab. legs links the bet to live markets so its closing price is recorded.
 let pendingLegs=null,pendingSource=null;
-function prefillBet({desc,odds:o,stake,p,book,legs,source,practice,tag,challengeId}){
+function prefillBet({desc,odds:o,stake,p,book,legs,source,practice,tag,challengeId,betType}){
   pendingSource=source||null;
   $("t-practice").checked=!!practice;
-  $("t-type").value="normal";
+  $("t-type").value=betType||"normal";
   $("t-tag").value=tag||"";
   $("t-desc").value=desc||"";
   $("t-odds").value=o>1?o.toFixed(2):"";
