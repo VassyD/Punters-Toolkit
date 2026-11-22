@@ -1471,6 +1471,10 @@ const liveBets=()=>T.bets.filter(b=>!b.deleted);
 const liveChallenges=()=>T.challenges.filter(c=>!c.deleted);
 const findBet=id=>T.bets.find(b=>b.id===id);
 const findCh=id=>T.challenges.find(c=>c.id===id);
+// Order of steps in a challenge. A bet moved into a challenge later gets chAt, so it sits by its date rather than when it was logged.
+const stepAt=b=>String(b.chAt||b.createdAt||"");
+const byStep=(a,b)=>stepAt(a).localeCompare(stepAt(b));
+const chSteps=(chId,except)=>liveBets().filter(b=>b.challengeId===chId&&b.id!==except).sort(byStep);
 
 function saveLocal(){store.set("pt-tracker",JSON.stringify(T));store.set("pt-tracker-dirty",dirty?"1":"0")}
 function change(fn){fn();rev++;dirty=true;saveLocal();renderTracker();clearTimeout(syncTimer);syncTimer=setTimeout(sync,800)}
@@ -1568,9 +1572,9 @@ function sharedGames(legs,excludeId){
 // Ladder: every settled step changes the bank by its profit or loss; money taken out or added changes it directly.
 // rows mixes steps ({b,n,after}) and bank adjustments ({adj,after}) in time order; stepRows is just the steps.
 function ladder(ch){
-  const steps=liveBets().filter(b=>b.challengeId===ch.id).sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt)));
+  const steps=chSteps(ch.id);
   const adjs=(ch.adjustments||[]).filter(a=>a&&!a.deleted&&Number.isFinite(a.amount));
-  const events=[...steps.map(b=>({b,at:b.createdAt})),...adjs.map(a=>({adj:a,at:a.at}))].sort((x,y)=>String(x.at).localeCompare(String(y.at)));
+  const events=[...steps.map(b=>({b,at:stepAt(b)})),...adjs.map(a=>({adj:a,at:a.at}))].sort((x,y)=>String(x.at).localeCompare(String(y.at)));
   let bank=ch.start,n=0,lastWasLoss=false,takenOut=0,added=0;
   const rows=events.map(ev=>{
     if(ev.adj){
@@ -1856,7 +1860,8 @@ function renderTracker(){
 // The draft holds what's typed, so a sync that redraws the log doesn't lose it.
 let editId=null,editDraft=null;
 function editRowHTML(b){
-  const d=editDraft,inCh=!!b.challengeId,ch=inCh?findCh(b.challengeId):null;
+  const d=editDraft,inCh=!!d.challengeId,ch=inCh?findCh(d.challengeId):null;
+  const chOpts=liveChallenges().filter(c=>c.id===b.challengeId||ladder(c).state==="active");
   const types=[["normal","Normal"],["boost","Boosted odds"],["bonus","Bonus bet"]];
   return `<tr class="editing"><td colspan="7">
     <form class="grid" id="t-editform" data-bet="${esc(b.id)}">
@@ -1868,8 +1873,9 @@ function editRowHTML(b){
       <label>Est. chance %<input id="e-p" data-ef="p" type="number" step="0.1" min="0" max="100" placeholder="optional" value="${esc(d.p)}"></label>
       <label>Bet type<select id="e-type" data-ef="betType">${types.map(([v,t])=>`<option value="${v}"${d.betType===v?" selected":""}>${t}</option>`).join("")}</select></label>
       <label>Reason<input id="e-tag" data-ef="tag" type="text" class="name" list="t-tags" value="${esc(d.tag)}"></label>
+      <label>Challenge<select id="e-ch" data-ef="challengeId"><option value="">None</option>${chOpts.map(c=>`<option value="${esc(c.id)}"${d.challengeId===c.id?" selected":""}>${esc(c.name||"Challenge")} · bank ${money(ladder(c).bank)}</option>`).join("")}</select></label>
       <label class="inline span" for="e-practice"><input id="e-practice" data-ef="practice" type="checkbox"${d.practice?" checked":""}${inCh?" disabled":""}> Practice bet${inCh?" (not available for challenge steps)":""}</label>
-      ${inCh?`<p class="note span">This is a step in "${esc(ch&&!ch.deleted?ch.name:"a deleted challenge")}". Changing the stake or odds recalculates the challenge bank from this step on.</p>`:""}
+      ${inCh?`<p class="note span">${d.challengeId===b.challengeId?"This is a step in":"Saving adds this bet as a step in"} "${esc(ch&&!ch.deleted?ch.name:"a deleted challenge")}", placed by its date. Changing the stake, odds or challenge recalculates the challenge bank from this step on.</p>`:""}
       <p class="note err span" id="t-editerr" hidden></p>
       <button class="btn solid" type="submit">Save changes</button>
       <button class="btn" type="button" data-edit-cancel>Cancel</button>
@@ -1887,30 +1893,59 @@ function bankBefore(b){
 ["input","change"].forEach(t=>$("t-log").addEventListener(t,e=>{
   const f=e.target.closest("[data-ef]");if(!f||!editDraft)return;
   editDraft[f.dataset.ef]=f.type==="checkbox"?f.checked:f.value;
+  if(f.dataset.ef==="challengeId"&&e.type==="change"){if(f.value)editDraft.practice=false;renderTracker()}
 }));
+// Where a bet moved into a challenge should sit: before the first step dated after it, otherwise when it was logged.
+function placeInChallenge(b,chId,date){
+  const later=chSteps(chId,b.id).find(x=>String(x.date||"")>date);
+  const own=String(b.createdAt||"");
+  if(!later||own<stepAt(later))return null;
+  return new Date(Date.parse(stepAt(later))-1).toISOString();
+}
+// The challenge bank just before a point in the ladder, leaving one bet out.
+function bankAt(ch,at,except){
+  let bank=ch.start;
+  for(const x of chSteps(ch.id,except))if(stepAt(x)<at){const p=betPL(x);if(Number.isFinite(p))bank+=x.betType==="bonus"&&x.result==="lost"?0:p}
+  for(const a of (ch.adjustments||[]))if(a&&!a.deleted&&Number.isFinite(a.amount)&&String(a.at)<at)bank+=a.amount;
+  return Math.round(bank*100)/100;
+}
 $("t-log").addEventListener("submit",e=>{
   const form=e.target.closest("#t-editform");if(!form)return;
   e.preventDefault();
   const b=findBet(form.dataset.bet),d=editDraft,err=$("t-editerr");if(!b||!d)return;
   const o=num(d.odds),stake=num(d.stake),pIn=String(d.p).trim(),p=pIn===""?NaN:num(pIn)/100;
   let problem=!String(d.desc).trim()?"Describe the bet.":!(o>1)?"Odds need to be above 1.00.":!(stake>0)?"Enter a stake.":(pIn!==""&&!(p>0&&p<1))?"Est. chance needs to be between 0 and 100.":!/^\d{4}-\d{2}-\d{2}$/.test(d.date)?"Choose a date.":"";
-  if(!problem&&b.challengeId){
+  const newCh=d.challengeId||"",moved=newCh!==(b.challengeId||"");
+  let chAt=b.chAt||null;
+  if(!problem&&moved&&newCh){
+    const ch=findCh(newCh);
+    chAt=placeInChallenge(b,newCh,d.date);
+    const before=ch?bankAt(ch,chAt||String(b.createdAt||""),b.id):null;
+    if(b.practice&&!d.practice)delete d.practice;
+    if(before!=null&&stake>before+0.005)problem=`The stake can't be more than the challenge bank at that point (${money(before)}).`;
+  }else if(!problem&&b.challengeId&&!moved){
     const before=bankBefore(b);
     if(before!=null&&stake>before+0.005)problem=`The stake can't be more than the challenge bank at this step (${money(before)}).`;
   }
   if(problem){err.textContent=problem;err.hidden=false;return}
-  const was={stake:b.stake,odds:b.odds};
+  const was={stake:b.stake,odds:b.odds,ch:b.challengeId};
   change(()=>{
     b.desc=String(d.desc).trim();b.date=d.date;b.book=String(d.book).trim();
     b.odds=Math.round(o*100)/100;b.stake=Math.round(stake*100)/100;
     if(Number.isFinite(p))b.p=Math.round(p*10000)/10000;else delete b.p;
     if(d.betType&&d.betType!=="normal")b.betType=d.betType;else delete b.betType;
     const tag=String(d.tag).trim();if(tag)b.tag=tag;else delete b.tag;
+    if(moved){
+      if(newCh){b.challengeId=newCh;if(chAt)b.chAt=chAt;else delete b.chAt}
+      else{delete b.challengeId;delete b.chAt}
+    }
     if(!b.challengeId&&d.practice)b.practice=true;else delete b.practice;
     b.updatedAt=nowIso();
     editId=null;editDraft=null;
   });
-  const changed=[was.stake!==b.stake?`stake ${money(was.stake)} → ${money(b.stake)}`:"",was.odds!==b.odds?`odds ${odds(was.odds)} → ${odds(b.odds)}`:""].filter(Boolean).join(", ");
+  const chName=id=>{const c=id&&findCh(id);return c?`"${c.name||"Challenge"}"`:"no challenge"};
+  const changed=[was.stake!==b.stake?`stake ${money(was.stake)} → ${money(b.stake)}`:"",was.odds!==b.odds?`odds ${odds(was.odds)} → ${odds(b.odds)}`:"",
+    moved?(newCh?`added to ${chName(newCh)}`:`removed from ${chName(was.ch)}`):""].filter(Boolean).join(", ");
   toast(changed?`Bet updated: ${changed}.`:"Bet updated.");
 });
 
@@ -1955,7 +1990,7 @@ $("t-log").addEventListener("click",e=>{
     const b=findBet(ed.dataset.editBet);if(!b)return;
     editId=b.id;
     editDraft={desc:b.desc||"",date:b.date||todayStr(),book:b.book||"",odds:String(b.odds),stake:String(b.stake),
-      p:Number.isFinite(b.p)?(b.p*100).toFixed(1):"",betType:b.betType||"normal",tag:b.tag||"",practice:!!b.practice};
+      p:Number.isFinite(b.p)?(b.p*100).toFixed(1):"",betType:b.betType||"normal",tag:b.tag||"",practice:!!b.practice,challengeId:b.challengeId||""};
     renderTracker();
     const s=$("e-stake");if(s){s.focus();s.select()}
     return;
@@ -2011,7 +2046,7 @@ $("t-chform").addEventListener("submit",e=>{
 const monthOf=d=>String(d||"").slice(0,7);
 function isFirstStep(b){
   if(!b.challengeId)return false;
-  const first=liveBets().filter(x=>x.challengeId===b.challengeId).sort((x,y)=>String(x.createdAt).localeCompare(String(y.createdAt)))[0];
+  const first=chSteps(b.challengeId)[0];
   return !!first&&first.id===b.id;
 }
 function newMoney(b){return b.practice||b.betType==="bonus"||b.result==="void"?0:(!b.challengeId||isFirstStep(b))?b.stake:0}
@@ -2117,7 +2152,7 @@ function exportBets(){
       odds:b.odds,stake:b.stake,result:b.result,cashout:Number.isFinite(b.cashout)?b.cashout:null,settledBy:b.settledBy||"you",
       profitLoss:r2(pl),estChance:r4(b.p),evPer100:Number.isFinite(b.p)?r2((b.p*b.odds-1)*100):null,
       closeOdds:c?r2(c.odds):null,vsClosePct:c?r2(c.clv*100):null,closeFairChance:c?r4(c.fair):null,
-      challenge:ch&&!ch.deleted?ch.name:"",challengeStep:ch&&!ch.deleted?liveBets().filter(x=>x.challengeId===b.challengeId).sort((x,y)=>String(x.createdAt).localeCompare(String(y.createdAt))).findIndex(x=>x.id===b.id)+1:null,
+      challenge:ch&&!ch.deleted?ch.name:"",challengeStep:ch&&!ch.deleted?chSteps(b.challengeId).findIndex(x=>x.id===b.id)+1:null,
       newMoney:r2(newMoney(b)),legs};
   });
 }
