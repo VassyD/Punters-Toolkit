@@ -180,6 +180,7 @@ footer strong{color:var(--ink)}
     <button role="tab" data-tab="tracker" aria-selected="false">Tracker</button>
     <button role="tab" data-tab="value" aria-selected="false">Value &amp; Kelly</button>
     <button role="tab" data-tab="multi" aria-selected="false">Multi</button>
+    <button role="tab" data-tab="boost" aria-selected="false">Boost %</button>
     <button role="tab" data-tab="margin" aria-selected="false">Market margin</button>
     <button role="tab" data-tab="dutch" aria-selected="false">Dutching</button>
     <button role="tab" data-tab="convert" aria-selected="false">Odds converter</button>
@@ -467,6 +468,28 @@ footer strong{color:var(--ink)}
     <p class="note">Each leg carries the bookie's margin, and those margins multiply. A 5% margin on each of four legs works out to roughly 19% against you on the multi. Same-game multis also assume legs are independent when they often aren't.</p>
   </section>
 
+  <!-- BOOST -->
+  <section class="panel" data-panel="boost" hidden>
+    <p class="lede">Enter the multi's price before and after the boost to see what the boost is worth. Sportsbet's multi boost adds a % to your winnings, so that's the figure to put in the Multi builder.</p>
+    <div class="grid">
+      <label>Price before boost<input id="bo-base" type="number" step="0.01" min="1.01" value="1.90"></label>
+      <label>Boosted price<input id="bo-new" type="number" step="0.01" min="1.01" value="1.97"></label>
+      <label>Stake $<input id="bo-stake" type="number" step="1" min="0" value="10"></label>
+      <label>Est. chance %<input id="bo-p" type="number" step="0.1" min="0" max="100" placeholder="optional"></label>
+    </div>
+    <div class="board" aria-live="polite">
+      <div><small>Boost on winnings</small><b id="bo-win" class="hi">–</b></div>
+      <div><small>Boost on odds</small><b id="bo-odds">–</b></div>
+      <div><small>Extra if it wins</small><b id="bo-extra">–</b></div>
+      <div><small>EV per $100 before</small><b id="bo-ev0">–</b></div>
+      <div><small>EV per $100 boosted</small><b id="bo-ev1">–</b></div>
+      <div><small>Break-even chance</small><b id="bo-be">–</b></div>
+    </div>
+    <div id="bo-verdict" class="verdict">–</div>
+    <div class="grid"><button class="btn solid" type="button" id="bo-use">Use this boost in the Multi builder</button></div>
+    <p class="note">Boost on winnings = (boosted price − 1) ÷ (price before − 1) − 1. Boost on odds = boosted price ÷ price before − 1. The est. chance from a builder card (or your own) shows whether the boost turns the bet into +EV.</p>
+  </section>
+
   <!-- MARGIN -->
   <section class="panel" data-panel="margin" hidden>
     <p class="lede">Enter every outcome in one market (head-to-head, or win/draw/win for soccer). See how much the bookie has built in and what the fair prices would be without it.</p>
@@ -565,6 +588,40 @@ function show(name){
 }
 tabs.forEach(t=>t.addEventListener("click",()=>show(t.dataset.tab)));
 try{const s=localStorage.getItem("pt-tab");if(s&&tabs.some(t=>t.dataset.tab===s))show(s)}catch(e){}
+
+/* Boost % */
+function calcBoost(){
+  const o=num($("bo-base").value),B=num($("bo-new").value),stake=num($("bo-stake").value)||0,pIn=$("bo-p").value.trim(),p=pIn===""?NaN:num(pIn)/100;
+  const ok=o>1&&B>1,win=ok?(B-1)/(o-1)-1:NaN,od=ok?B/o-1:NaN;
+  const sg=x=>(x>0?"+":"")+pct(x);
+  $("bo-win").textContent=ok?sg(win):"–";
+  $("bo-odds").textContent=ok?sg(od):"–";
+  $("bo-extra").textContent=ok&&stake>0?money((B-o)*stake):"–";
+  const pOk=p>0&&p<1;
+  const ev0=pOk&&o>1?(p*o-1)*100:NaN,ev1=pOk&&B>1?(p*B-1)*100:NaN;
+  const evTxt=x=>Number.isFinite(x)?`<span class="${x>0?"pos":"neg"}">${x>0?"+":""}${money(x)}</span>`:"–";
+  $("bo-ev0").innerHTML=evTxt(ev0);$("bo-ev1").innerHTML=evTxt(ev1);
+  $("bo-be").textContent=B>1?pct(1/B):"–";
+  const v=$("bo-verdict");
+  if(!ok){v.textContent="Enter both prices, above 1.00.";v.className="verdict";}
+  else if(B<o){v.textContent="The boosted price is lower than the original. Check the two prices.";v.className="verdict bad";}
+  else if(pOk){
+    v.textContent=ev1>0?(ev0>0?"Value before the boost, and more with it.":"The boost turns this into a +EV bet."):`Still negative EV after the boost. It needs about a ${pct(1/B)} chance to break even.`;
+    v.className="verdict "+(ev1>0?"good":"bad");
+  }else{v.textContent=`A ${pct(win)} boost on winnings. Add an est. chance to see whether it makes the bet +EV.`;v.className="verdict";}
+  $("bo-use").disabled=!(ok&&win>0);
+}
+["bo-base","bo-new","bo-stake","bo-p"].forEach(id=>$(id).addEventListener("input",calcBoost));
+calcBoost();
+$("bo-use").addEventListener("click",()=>{
+  const o=num($("bo-base").value),B=num($("bo-new").value);if(!(o>1&&B>o))return;
+  const w=Math.round(((B-1)/(o-1)-1)*1000)/10;
+  $("b-boost").value=w;$("b-boosttype").value="win";
+  try{localStorage.setItem("pt-boost",String(w))}catch(e){}
+  $("b-boostnote").hidden=true;
+  if(typeof renderBuilder==="function")renderBuilder();
+  toast(`Multi builder boost set to ${w}% on winnings.`);
+});
 
 /* Value & Kelly */
 function calcValue(){
